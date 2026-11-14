@@ -86,3 +86,51 @@ print('blocks',n,'max_indeg',mx,'ratio',round(mx/n,2) if n else 0)\"" target
 - 去混淆后 CFG 恢复线性/正常结构
 - 字符串可搜索、算法可复现
 - 去混淆产物与原程序行为等价（多输入跑通）
+
+## 六、自动化去混淆工具代码
+
+### Z3 证明不透明谓词
+```python
+import z3
+x = z3.BitVec('x', 32)
+s = z3.Solver()
+s.add(x * (x + 1) % 2 != 0)   # 不透明谓词示例
+print(s.check())  # unsat → 永真，该分支可移除
+```
+
+### unicorn 引擎 SMC 自动解包
+```python
+from unicorn import *
+from unicorn.x86_const import *
+
+mu = Uc(UC_ARCH_X86, UC_MODE_32)
+mu.mem_map(0x400000, 0x10000)
+mu.mem_write(0x400000, binary_code)
+mu.emu_start(decrypt_entry, decrypt_end)   # 跑解密循环
+decrypted = mu.mem_read(code_start, code_length)  # 读解密后代码
+```
+
+### angr 符号执行去平坦化
+```python
+import angr, claripy
+
+proj = angr.Project('./obfuscated')
+cfg = proj.analyses.CFGFast()
+
+# 找 dispatcher（最高入度基本块）
+dispatcher = max(cfg.graph.nodes(), key=lambda n: cfg.graph.in_degree(n))
+
+# 对每个 case 块，符号求解 state 变量找真实后继
+for block in case_blocks:
+    state = proj.factory.blank_state(addr=block.addr)
+    # ... 求解 state 变量确定真实后继
+```
+
+### 去混淆工具对照
+| 技术 | 工具 | 效果 |
+|---|---|---|
+| 符号执行去平坦化 | angr / Triton / miasm | 高，覆盖所有状态转移 |
+| SMC 解包 | unicorn | 自动跑解密循环 dump |
+| 不透明谓词 | Z3 | 证明永真/永假分支 |
+| 控制流平坦化 | D-810 (IDA 插件) | 专为 CFF 设计 |
+| movfuscator | demovfuscator | 从 mov 模式还原原始操作 |
