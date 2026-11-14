@@ -134,3 +134,37 @@ for block in case_blocks:
 | 不透明谓词 | Z3 | 证明永真/永假分支 |
 | 控制流平坦化 | D-810 (IDA 插件) | 专为 CFF 设计 |
 | movfuscator | demovfuscator | 从 mov 模式还原原始操作 |
+
+## 加密算法 Python 复现速查
+
+```python
+import hashlib, hmac, base64
+from Crypto.Cipher import AES, DES, DES3, PKCS1_v1_5
+from Crypto.PublicKey import RSA
+from Crypto.Util.Padding import pad, unpad
+
+# 哈希
+hashlib.md5(b'text').hexdigest()
+hashlib.sha256(b'text').hexdigest()
+hmac.new(b'key', b'msg', hashlib.sha256).hexdigest()
+
+# AES-CBC
+aes = AES.new(b'16bytekey123456', AES.MODE_CBC, b'16byteiv12345678')
+base64.b64encode(aes.encrypt(pad(b'plaintext', 16))).decode()
+unpad(AES.new(b'16bytekey123456', AES.MODE_CBC, b'16byteiv12345678').decrypt(base64.b64decode('密文')), 16).decode()
+# AES-ECB 无 IV: AES.new(key, AES.MODE_ECB)
+
+# RSA
+key = RSA.import_key(open('pub.pem').read())
+base64.b64encode(PKCS1_v1_5.new(key).encrypt(b'plaintext')).decode()
+
+# 国密 SM2/SM4 (pip install gmssl)
+from gmssl import sm2, sm4
+# SM2: sm2.CryptSM2(public_key=pub, private_key='').encrypt(plain)
+# SM4: sm4.CryptSM4().set_key(key, sm4.SM4_ENCRYPT); crypt.crypt_ecb(plain)
+
+# 编码检测
+# Base64: A-Za-z0-9+/=，长度 4 的倍数
+# Hex: 0-9a-f，长度偶数
+# URL 编码: %XX 格式
+```
