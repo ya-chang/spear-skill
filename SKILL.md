@@ -39,6 +39,8 @@ description: >
 | EDR / AV 绕过（unhook/syscall/ETW/AMSI） | `references/edr-bypass.md` |
 | API 安全测试（REST/GraphQL/JWT/OAuth） | `references/api-security.md` |
 | 跨版本符号迁移 / 二进制差分 | `references/binary-diff.md` |
+| N-day 补丁差分到利用（CVE 复现/武器化） | `references/patch-diff-exploit.md` |
+| 多阶段攻击链编排（从 A 打到 B） | `references/attack-chain.md` |
 | 游戏外挂/内存读写/注入/协议 | `references/game-cheat.md` |
 | 网站/API/内网渗透打点 | `references/pentest-playbook.md` |
 | 完整破解链路（脱壳→反调试→VM→去混淆→keygen/patch） | `references/crack-workflow.md` |
