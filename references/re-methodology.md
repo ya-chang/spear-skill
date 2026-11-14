@@ -70,3 +70,35 @@ frida -f ./target -l hook.js
 | 搜字节 | `r2 /x <hex>` / GDB `find` |
 | 看内存映射 | `cat /proc/<pid>/maps` / pwndbg `vmmap` |
 | 查算法常数 | `strings` + 常数表（0xd76aa478=MD5，0x63=AES S-box） |
+
+## 调用约定速查
+
+| 平台 | 约定 | 参数传递 |
+|---|---|---|
+| x86 cdecl | 调用者清理栈 | 参数从右往左压栈 |
+| x86 stdcall | 被调用者清理栈 | 参数从右往左压栈 |
+| x64 Windows | Microsoft x64 | RCX, RDX, R8, R9，多余走栈 |
+| x64 System V | AMD64 ABI | RDI, RSI, RDX, RCX, R8, R9，多余走栈 |
+| ARM | AAPCS | R0-R3，多余走栈 |
+
+## 常见代码模式识别
+
+```c
+// 字符串混淆（XOR 解密循环）
+for (int i = 0; i < len; i++)
+    str[i] ^= key;
+
+// 反调试（IsDebuggerPresent）
+if (IsDebuggerPresent())
+    exit(1);
+
+// API 哈希（恶意软件常用，隐藏导入）
+hash = 0;
+while (*name)
+    hash = ror(hash, 13) + *name++;
+
+// 栈字符串构造
+char s[8];
+*(DWORD*)s = 0x6C6C6548;  // "Hell"
+*(DWORD*)(s+4) = 0x6F;    // "o\0"
+```
