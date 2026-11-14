@@ -127,3 +127,27 @@ int strcmp(const char *s1, const char *s2) {
 gcc -shared -fPIC -o hook_strcmp.so hook_strcmp.c -ldl
 LD_PRELOAD=./hook_strcmp.so ./target
 ```
+
+## vtable 继承关系推断
+
+**推断规则：**
+1. 子类 vtable 前 N 个条目与父类 vtable 相同（N = 父类虚函数数量）
+2. 子类 vtable 在父类基础上追加新虚函数
+3. 多继承：子类对象包含多个 vptr，排列按继承顺序
+
+**识别多继承：** 构造函数中对 this 的不同偏移分别写入 vptr：
+```asm
+mov [rdi + 0x00], vtable_A    ; 第一个基类 vptr
+mov [rdi + 0x20], vtable_B    ; 第二个基类 vptr（偏移 = 第一个基类大小）
+```
+
+**r2pipe 继承分析：**
+```python
+import r2pipe, json
+r = r2pipe.open('./target', flags=['-A', '-2'])
+vtables = json.loads(r.cmd('avj') or '[]')
+# 对每对 vtable 检查前缀关系（疑似继承）
+for vt_a in vtables:
+    for vt_b in vtables:
+        # 比较 vt_a 前 N 个条目是否与 vt_b 匹配 → 推断继承
+```
