@@ -337,3 +337,102 @@ void read_item(FILE *f) {
 - **逻辑利用**：利用服务端校验缺失的逻辑漏洞
 - **网络协议利用**：UDP 模糊测试（Scapy）、自定义协议逆向后构造恶意包
 - **自定义协议逆向**：抓包分析协议结构，构造能触发服务端漏洞的包
+
+## 高级利用与绕过技术
+
+### Asset-Based RCE（纹理/音乐/地图文件）
+游戏通过第三方库加载外部资产（`.png`/`.mp3`/`.pak`/`.bsp`），可注入恶意文件触发解析器溢出或逻辑缺陷：
+- 恶意 PNG → libpng 溢出
+- 畸形 MP3 → libmad 解析缺陷
+- 恶意 `.bsp`/`.pak` → 自定义脚本钩子
+- **工具**：Peach Fuzzer、Fuzzino、自定义资产生成器
+
+**利用矩阵：**
+| 技术 | 目标 | 说明 |
+|---|---|---|
+| 栈溢出 | 本地缓冲区 | strcpy 覆盖返回地址 |
+| 存档注入 | 客户端 RCE | 构造 .sav 触发内存破坏 |
+| JWT 伪造 | 后端认证绕过 | alg=none 或弱密钥 → 管理员 |
+| 参数篡改 | 游戏 API | 0 金币购买顶级物品 |
+| 包模糊测试 | 多人引擎 | 超大/畸形 UDP 包 |
+| 竞态滥用 | 制作/商店 | 异步洪水双重购买 |
+| 脚本注入 | Lua 游戏 | `"name": "x'); os.execute('calc.exe') --"` |
+
+### 智能合约与游戏逻辑黑客
+区块链游戏：重放签名交易（双花）、代理合约操控注入逻辑、滥用编写不当的游戏逻辑。
+
+### 回放系统黑客
+现代游戏的确定性回放系统（.dem/.replay/.json）可逆向提取遥测、修改注入任意输入、利用引擎盲目信任回放内容。
+
+| 游戏/引擎 | 格式 | 说明 |
+|---|---|---|
+| CS:GO/Source | .dem | 二进制命令/事件日志 |
+| Rocket League | .replay | JSON+protobuf+物理帧 |
+| Overwatch | .replay | Zstd 压缩二进制 |
+| StarCraft II | .SC2Replay | MPQ 归档 |
+| Fortnite/UE | .replay | Unreal DemoNetDriver |
+
+**解析工具：** CS:GO 用 demoinfo2/CSGO-Demo-Parser；Rocket League 用 BakkesMod/ReplayParser。
+**利用：** 反序列化 RCE（`"player_name": "__import__('os').system('calc.exe')"`）、回放重放滥用、服务器回放导入漏洞。
+
+### Aimbot 技术
+| 类型 | 来源 | 检测风险 | 平台 |
+|---|---|---|---|
+| 内存瞄准 | 实体内存 | 高 | PC |
+| 像素瞄准 | 屏幕/颜色 | 中低 | PC/主机 |
+| AI 瞄准 | 神经视觉 | 低 | PC/主机 |
+| 输入瞄准 | 控制器 | 极低 | 主机+PC |
+
+**内存瞄准：** 读敌人坐标 → 计算 pitch/yaw → 写视角内存。
+**像素瞄准：** OpenCV 截图识别敌人颜色框 → pyautogui 平滑移动。
+**AI 瞄准：** YOLOv5 检测敌人 → Kalman 滤波预测轨迹。
+**主机瞄准：** Arduino Joystick 外部操控。
+
+### 穿墙与延迟利用
+- **穿墙（Clipping）：** Patch 碰撞标志位，`*(bool*)(player_ptr + collision_offset) = false`
+- **服务端传送同步：** iptables TEE + netem 延迟制造不同步
+- **PvP 延迟利用：** Frida hook sendto 延迟战斗包、scapy 丢伤害包、伪造 tick 计数
+
+### 反外挂高级绕过
+- Hook `NtQuerySystemInformation` 隐藏进程
+- Patch `IsDebuggerPresent`、禁用 ETW（清零 EtwpProviderTable）
+- 驱动级注入（签名驱动如 Capcom.sys）
+- PEB 摘链 DLL（从 InMemoryOrderModuleList 移除）
+- Patch `rdtsc`、VMProtect/Themida 加壳、伪造遥测
+
+**内核战：** 驱动签名绕过（泄漏证书）、Hypervisor 检测规避（Patch CPUID VMX）、内存隐藏（改 CR3 幽灵内存）、DMA（PCILeech+FPGA）、行为伪造（GAN 鼠标）
+**高级：** 内核回调 Patch、Rootkit 持久隐藏、HWID 伪造绕过封禁
+
+### 游戏逻辑滥用
+NOP 计时器、覆写指针跳过冷却、篡改伤害公式、禁用后坐力、货币不同步、传送、伪造事件、客户端预测不同步（幽灵敌人）、修改 RNG 种子、物品复制。
+**高级：** 物理操控（Hook PhysX）、坐标扭曲、RNG 预测（逆向 Mersenne Twister）
+
+### 引擎特化利用
+- **Unity：** Patch Assembly-CSharp.dll、Hook Mono 运行时、Il2CppDumper+Ghidra、劫持 Mono JIT
+- **Unreal：** 注入 .pak、Hook UFunction::ProcessEvent、UE5 GObjects/GNames dump、ExecuteConsoleCommand
+- **GameMaker：** 修改 .yy/.yyp、YYDebug 注入
+- **WebGL/WASM：** wasm-decompile、wasm-opt
+- **高级：** Shader 替换（透视）、引擎分配器物理 Hook
+
+### APT 级技术
+Ring0 驱动注入、EPT 内存重定向（VT-x）、Patch PTE 隐藏页、Hypervisor 执行层、PCILeech DMA、UEFI/EFI Bootkit 固件持久化、GPU 卸载作弊（CUDA 着色器）、Patch Syscall Stubs、NTFS ADS 备用数据流。
+**固件/硬件：** UEFI Rootkit（CH341A 刷固件）、GPU 恶意（cuMemAlloc+cuLaunchKernel）、Intel ME（Red Unlock）、SGX/SEV 保护作弊逻辑、隐写术嵌入载荷
+
+### 自动化与模糊测试
+- pymem/pyMeow 脚本化内存修改
+- AFL++/Honggfuzz 模糊测试 .sav/.pak/.json/.lua
+- SendInput 模拟移动、Frida 追踪、Selenium 自动化 UI
+- UDP 包模糊器、脚本引擎 Hook、YOLOv5+OpenCV 自动瞄准
+- AI 机器人：YOLOv7+DeepSORT 实时追踪、RL 训练（Unity ML-Agents/Gym）
+- 覆盖率引导模糊：AFL++ QEMU 模式、自定义变异器（Protobuf/专有结构）
+
+### DRM 与混淆绕过
+- **Denuvo 破解：** x64dbg 运行中 dump 内存、ScyllaHide 绕过调试检测、Scylla/PE-bear 重建 PE
+- **定位 OEP：** 追踪回原始入口点
+- **Patch 解密循环：** 移除 XOR 例程、禁用 CRC 校验
+- **定位授权检查：** IDA 交叉引用密钥字符串
+- **交接点注入：** Hook stub-解密过渡
+- **去虚拟化：** 脱壳 VMProtect/Themida
+- **Hook NtOpenFile：** Frida 拦截授权查询
+- **VMProtect 3.x：** Triton 解码 x86 操作码
+- **Shellcode 工程：** ESP 覆盖（渲染函数钩子执行）、多态 XOR 混淆载荷
