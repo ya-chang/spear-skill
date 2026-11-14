@@ -168,3 +168,181 @@ from gmssl import sm2, sm4
 # Hex: 0-9a-f，长度偶数
 # URL 编码: %XX 格式
 ```
+
+## 七、垃圾代码与不透明谓词（补充）
+
+### 1. 垃圾代码插入（Junk Code）
+死代码，不影响程序输出，只为增加分析时间。
+
+**识别：**
+- 写寄存器/内存但后续从不读取的指令
+- 返回值被丢弃且无副作用的函数调用
+- 边界不变、结果不使用的循环
+
+**移除策略：**
+1. 计算 def-use 链（IDA/Ghidra 数据流分析）
+2. 把无下游使用的指令标记为 dead
+3. 验证移除后行为不变（trace 对比）
+
+### 2. 不透明谓词类型表
+条件分支恒真/恒假，但不直观。
+
+| 类型 | 示例 | 恒值 |
+|---|---|---|
+| 算术 | `x² ≥ 0` | 真 |
+| 数论 | `x*(x+1) % 2 == 0` | 真（连续整数乘积） |
+| 指针 | 别名后 `ptr == ptr` | 真 |
+| 哈希 | `CRC32(常数) == 已知值` | 真 |
+
+**去混淆：**
+- 抽象解释：证明条件为常量
+- 符号执行：Z3 证明 `∀x: predicate(x) = True`
+- 模式匹配：识别已知不透明谓词族
+- 动态：trace 观察分支从不走/总走
+
+```python
+import z3
+x = z3.BitVec('x', 32)
+s = z3.Solver()
+s.add(x * (x + 1) % 2 != 0)
+print(s.check())  # unsat → 恒真，该分支可移除
+```
+
+## 八、SMC 补充：XOR 解密循环与自动解包
+
+### XOR 解密循环（最常见）
+```asm
+lea esi, [encrypted_code]
+mov ecx, code_length
+mov al, xor_key
+decrypt_loop:
+    xor byte [esi], al
+    inc esi
+    loop decrypt_loop
+    jmp encrypted_code  ; 已解密
+```
+
+### 分析策略
+```
+1. 找解密例程（.text 写入循环中的 XOR/ADD/SUB）
+2. 在循环结束后设断点
+3. 断点处 dump 已解密内存区
+4. 在 IDA/Ghidra 中重新分析 dump 代码
+5. 多层解密：对每层重复
+```
+
+## 九、字符串加密模式表
+
+| 模式 | 示例 | 恢复 |
+|---|---|---|
+| XOR 循环 | `for(i=0;i<len;i++) s[i]^=key;` | hook 或仿真 XOR 函数 |
+| 栈字符串 | `mov [esp+0],'H'; mov [esp+1],'e';...` | IDA FLIRT / Ghidra 脚本重组 |
+| RC4 加密 | 加密块 + 二进制内 RC4 密钥 | 提取密钥，离线解密 |
+| AES 加密 | 加密块 + 运行时派生 AES 密钥 | hook 解密后 |
+| 自定义编码 | Base64+XOR+反转 | trace 解码函数并复现 |
+
+### Ghidra 自动字符串解密脚本
+```python
+# 找 XOR 解密调用并仿真
+from ghidra.program.model.symbol import SourceType
+
+decrypt_func = getFunction("decrypt_string")
+refs = getReferencesTo(decrypt_func.getEntryPoint())
+for ref in refs:
+    call_addr = ref.getFromAddress()
+    # 提取参数（加密缓冲区指针、密钥、长度）
+    # 仿真解密，用明文加注释
+```
+
+## 十、导入隐藏（Import Hiding）
+
+### GetProcAddress + 哈希查找
+```c
+FARPROC resolve(DWORD hash) {
+    // 遍历 PEB → LDR → InMemoryOrderModuleList
+    // 对每个 DLL 遍历导出表
+    // 哈希每个导出名，与目标哈希比较
+    // 返回匹配的函数指针
+}
+```
+
+### 恢复步骤
+1. 识别哈希算法（常见 CRC32、djb2、ROR13+ADD）
+2. 对所有已知 API 名计算哈希
+3. 构建 hash → API 名查找表
+4. 在 IDA/Ghidra 中标注解析出的调用
+
+### 常见哈希算法
+
+| 名称 | 算法 | 使用者 |
+|---|---|---|
+| ROR13 | `hash = (hash >> 13 \| hash << 19) + char` | Metasploit shellcode |
+| djb2 | `hash = hash * 33 + char` | 各类恶意代码 |
+| CRC32 | 函数名标准 CRC32 | 复杂加壳器 |
+| FNV-1a | `hash = (hash ^ char) * 0x01000193` | 现代恶意代码 |
+
+## 十一、反反汇编技巧
+
+| 技巧 | 机制 | 修复 |
+|---|---|---|
+| 重叠指令 | `jmp $+2; db 0xE8`（假 call 前缀） | 从正确偏移手动重新分析 |
+| 错位跳转 | 跳到多字节指令中间 | 强制 IDA 在目标处重新分析 |
+| 条件跳转对 | `jz $+5; jnz $+3`（恒跳转，扰乱线性反汇编） | 转为无条件 jmp |
+| 返回地址操纵 | `push addr; ret` 代替 `jmp addr` | 识别 push+ret 为跳转 |
+| 异常流 | 触发异常，真实代码在 handler | 分析异常处理链 |
+| call+add [esp] | `call $+5; add [esp], N; ret`（计算跳转） | 计算真实目标 |
+
+### IDA 修复
+```
+右键 → Undefine (U)
+右键 → Code (C) 于正确偏移
+Edit → Patch → Assemble（永久修复）
+```
+
+## 十二、混淆识别速查与决策树
+
+**IDA/Ghidra 症状 → 混淆类型 → 首选：**
+
+| 症状 | 疑似混淆 | 起步 |
+|---|---|---|
+| 平坦 CFG、单一巨型 switch | 控制流平坦化 | 符号执行恢复 CFG |
+| 只有 mov 指令 | movfuscator | demovfuscator / trace 提升 |
+| pushad/pushfd → VM 入口 | VM 保护 | handler 表提取 |
+| 代码执行前 XOR 循环 | SMC/字符串加密 | 动态分析，解码后断点 |
+| 不可能条件（不透明谓词） | 垃圾代码插入 | 模式化移除 |
+| 所有字符串不可读 | 字符串加密 | hook 解密或仿真 |
+| IAT 无导入 | 导入隐藏 | trace GetProcAddress/哈希解析 |
+
+### 决策树
+```
+能运行？
+├─ 能 → 动态优先：BP 关键 API、trace、dump 解密代码/字符串
+└─ 不能（固件/异构）→ 静态：按症状识别类型
+代码形态？
+├─ 巨型平坦 switch/dispatcher → CFF（D-810 / 符号去平坦化）
+│   或取指-译码-执行 → VM（提取 handler、写反汇编器）
+├─ 只有 mov → movfuscator（demovfuscator）
+├─ .text 写入 XOR/ADD 循环 → SMC（解码后断点 dump）
+├─ 分支不可能条件 → 不透明谓词（Z3 证明 / 模式移除）
+├─ 反汇编错乱/函数重叠 → 反反汇编（正确偏移重分析）
+├─ 无可读字符串 → 字符串加密（hook 解密 / 仿真）
+├─ IAT 无导入 → 导入隐藏（识别哈希、建查找表）
+└─ pushad/pushfd→复杂代码→popad/popfd → VM 保护（完整 VM 分析）
+```
+
+## 十三、去混淆工具箱
+
+| 工具 | 用途 | 适用 |
+|---|---|---|
+| IDA Pro + Hex-Rays | 反汇编、反编译、脚本 | 通用分析 |
+| Ghidra | 免费替代，Java/Python 脚本 | 预算有限 |
+| D-810（IDA 插件） | 自动 CFF 去平坦化 | OLLVM 式混淆 |
+| miasm | IR 分析框架 | 符号去混淆 |
+| Triton | 动态符号执行 | 不透明谓词、CFF |
+| REVEN | 全系统 trace 记录回放 | VM 保护分析 |
+| demovfuscator | movfuscator 还原 | 纯 mov 二进制 |
+| x64dbg + 插件 | 动态分析脚本 | Windows RE |
+| Unicorn | CPU 仿真 | SMC 解包、shellcode |
+| Capstone | 反汇编库 | 自定义工具 |
+| IDA FLIRT | 函数签名匹配 | 识别 stripped 库代码 |
+| Binary Ninja | MLIL/HLIL 反汇编 | 自动化分析 |
