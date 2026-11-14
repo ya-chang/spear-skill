@@ -116,3 +116,88 @@ Process.enumerateRanges('r--').forEach(r => {
 - `file` 识别为正常 ELF/PE
 - 能正常运行，功能与原程序一致
 - 静态分析能看到完整函数与字符串
+
+## 六、加壳器特征详表
+
+| 加壳器 | 识别特征 | 处理方法 |
+|---|---|---|
+| UPX | 魔数 `UPX!`，段名 `UPX0`/`UPX1` | `upx -d` 直接脱壳 |
+| MPRESS | `.MPRESS1`/`.MPRESS2` 段名 | 动态 dump OEP |
+| ASPack | 低熵导入表 + 高熵代码段 | 动态 dump |
+| Themida | 极高熵，大量虚拟机指令 | 需专项反虚拟机工具 |
+| VMProtect | `.vmp0`/`.vmp1` 段，字节码解释器 | 见 VM 保护处理 |
+| Enigma Protector | 大段加密 + License 检查 | 动态追踪解密例程 |
+| PyInstaller（Python） | `MEIPASS`、`PKG` 魔数 | `pyinstxtractor` 解包 |
+| Go binary | 大型 ELF，`go.buildinfo` 段 | `go-dex`，符号自动恢复 |
+
+## 七、UPX OEP 特征与手动脱壳
+
+UPX stub 解压完毕后的跳转特征：
+```asm
+; x86-32 UPX stub 末尾：
+popa                         ; 恢复所有寄存器
+jmp  0x<OEP>                 ; 跳到原始入口点
+; x86-64：
+pop r15; pop r14; pop r13; ...
+jmp <OEP>
+```
+
+**修改版 UPX（`upx -d` 失败时）GDB 手动 dump：**
+```gdb
+gdb ./target
+(gdb) b *0x400000   # 断在入口点
+(gdb) run
+# 单步 si 追踪，等待 stub 解压完毕，直到 jmp 到 OEP
+# 发现 OEP 后：
+(gdb) dump binary memory unpacked.bin 0x400000 0x500000
+# 再用 r2 分析 dump
+r2 -A ./unpacked.bin
+```
+
+## 八、脱壳通用工作流（mprotect 监控 + 自动 dump）
+
+```bash
+# 监控所有 mprotect(EXEC) 调用
+gdb -q ./target -ex "catch syscall mprotect" -ex "run" -ex "continue" -batch
+
+# 程序执行后手动在可疑 EXEC 地址设硬件断点
+(gdb) hb *<OEP候选地址>
+# OEP 断下后 dump：
+(gdb) dump binary memory /tmp/unpacked.bin 0x<load_base> 0x<load_base+0x200000>
+```
+
+**组合命令：启动 + 监控 mprotect + 自动 dump**
+```bash
+gdb -q ./target \
+  -ex "catch syscall mprotect" \
+  -ex "run" \
+  -ex "commands" \
+  -ex "silent" \
+  -ex "printf \"mprotect EXEC hit\\n\"" \
+  -ex "dump binary memory /tmp/unpacked_$(date +%s).bin 0x400000 0x600000" \
+  -ex "continue" \
+  -ex "end" \
+  -batch
+```
+
+## 九、分段熵检测（更精确）
+
+```bash
+# r2 分段熵
+r2 -q -c 'iS~entropy' ./target
+
+# 全局熵 + 分段熵结合判断
+python3 -c "
+import math, collections, sys
+data = open(sys.argv[1],'rb').read()
+freq = collections.Counter(data)
+h = -sum((c/len(data))*math.log2(c/len(data)) for c in freq.values())
+print(f'全局熵值: {h:.4f}/8.0')
+print('结论:', '⚠️ 疑似加壳/加密' if h > 7.0 else '✅ 正常范围')
+" ./target
+```
+
+**判断标准：**
+- 全局熵 > 7.0 → 疑似加壳/加密
+- 某段熵 > 7.5 → 该段被加密/压缩
+- 正常代码段熵 5.0–6.5
