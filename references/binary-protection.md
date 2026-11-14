@@ -76,3 +76,30 @@ python3 -c "from pwn import *; print(one_gadget(libc))"  # 单 gadget
 - payload 能稳定触发漏洞
 - 拿到预期权限（shell / 代码执行）
 - 多轮运行不崩溃（稳定化）
+
+## NX/DEP 绕过全表与 mprotect 链
+
+| 绕过方法 | 说明 |
+|---|---|
+| ROP | 拼现有 ret gadget 链 |
+| ret2libc | 直接调 libc 函数（system/execve） |
+| ret2csu | 用 `__libc_csu_init` gadget 可控调函数 |
+| ret2dlresolve | 伪造动态链接器结构解析任意函数 |
+| SROP | 用 sigreturn 从假信号帧设置所有寄存器 |
+| mprotect ROP | 调 mprotect 设页可执行 → 跳 shellcode |
+| JIT spray | JIT 环境（V8 等）用 JIT 编译器造可执行代码 |
+
+**mprotect 链：**
+```python
+rop = b'A' * offset
+rop += p64(pop_rdi) + p64(stack_page)     # 页对齐地址
+rop += p64(pop_rsi) + p64(0x1000)         # 大小
+rop += p64(pop_rdx) + p64(7)              # PROT_READ|WRITE|EXEC
+rop += p64(mprotect_addr)
+rop += p64(shellcode_addr)                 # 跳到已可执行栈上的 shellcode
+```
+
+**Full RELRO 替代目标**（GOT 只读无法写）：
+- 覆盖其他可写结构：堆上的函数指针、vtable、栈上的返回地址
+- 泄漏 libc 基址后用 one_gadget / ret2libc
+- 覆盖 `__malloc_hook` / `__free_hook`（老版本 glibc）
