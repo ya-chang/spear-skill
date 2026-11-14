@@ -27,10 +27,19 @@ spear/
     deobfuscation.md            # 去混淆（平坦化/字符串/虚假控制流/间接调用/SMC）
     vm-bytecode.md              # 自定义 VM/字节码逆向
     binary-protection.md        # 二进制保护绕过（pwn 向）
+    pwn-chain.md                # pwn 利用链（栈/堆/内核，稳定 exploit）
     dotnet.md                   # .NET 逆向（dnSpy/去混淆/注册机）
     linux-dynamic.md            # Linux 动态分析协同（GDB/r2/Frida/angr）
     hikari-deobfuscation.md     # Hikari/OLLVM 明文恢复（L1–L4）
     elf-apk-patch.md            # ELF/APK 本地 patch、壳脱修、重签名
+    apk-reverse.md              # APK 逆向（jadx/apktool/smali/重打包/Frida）
+    mobile-reverse.md           # Android+iOS 移动逆向、SSL Pinning/Root 绕过
+    js-reverse.md               # 前端 JS 逆向、签名链路、补环境复现
+    malware-analysis.md         # 恶意代码分析、YARA/Sigma/IOC
+    firmware-pentest.md         # 固件/IoT 渗透（binwalk/EMBA/仿真）
+    edr-bypass.md               # EDR/AV 绕过（unhook/syscall/ETW/AMSI）
+    api-security.md             # API 安全测试（REST/GraphQL/JWT/OAuth）
+    binary-diff.md              # 跨版本符号迁移 / 二进制差分
     game-cheat.md               # 游戏外挂/内存读写/注入/协议
     pentest-playbook.md         # 渗透打点（recon→利用→后渗透）
     crack-workflow.md           # 完整破解链路（端到端串联）
