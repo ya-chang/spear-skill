@@ -39,6 +39,7 @@ spear/
     apk-reverse.md              # APK 逆向（jadx/apktool/smali/重打包/Frida）
     mobile-reverse.md           # Android+iOS 移动逆向、SSL Pinning/Root 绕过
     js-reverse.md               # 前端 JS 逆向、签名链路、补环境复现
+    protocol-reverse.md         # 协议逆向（抓包/序列化/重放）
     malware-analysis.md         # 恶意代码分析、YARA/Sigma/IOC
     firmware-pentest.md         # 固件/IoT 渗透（binwalk/EMBA/仿真）
     edr-bypass.md               # EDR/AV 绕过（unhook/syscall/ETW/AMSI）
