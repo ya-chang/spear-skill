@@ -301,3 +301,39 @@ Interceptor.attach(Module.findExportByName(null, "lua_pcall"), {
 - 不创建新进程/模块，复用已有模块的内存空间
 - 用 AOB 扫描定位目标后直接修改内存
 - 配合代码洞注入，避免模块加载被检测
+
+## 游戏利用技术（Exploitation）
+
+### 本地内存利用
+**栈溢出：**
+```c
+void parse_chat(char *msg) {
+    char buf[128];
+    strcpy(buf, msg);  // 无边界检查
+}
+```
+```python
+payload = b"A" * 132 + b"\xDE\xAD\xBE\xEF"
+send_to_game_chat(payload)
+```
+
+**堆溢出：**
+```c
+void read_item(FILE *f) {
+    char *buf = malloc(64);
+    fread(buf, 1, 128, f);  // 堆溢出
+}
+```
+利用：堆喷射 + UAF，用构造的 `.inv` 文件，重新分配已释放内存为攻击者控制的结构。
+
+**存档利用：**
+现代游戏解析自定义 `.sav`/`.json`/`.bin` 存档格式。
+- 目标：长字符串（名字/聊天/物品栏）、内嵌脚本字段、复用的遗留字段（如旧引擎的 Lua）
+- 构造恶意存档触发解析器漏洞或注入脚本
+
+### 远程与服务端利用
+- **API 参数篡改**：修改客户端发送的参数（位置/血量/金币）
+- **JWT Token 伪造**：篡改 JWT 声明（role/金币）或弱密钥爆破
+- **逻辑利用**：利用服务端校验缺失的逻辑漏洞
+- **网络协议利用**：UDP 模糊测试（Scapy）、自定义协议逆向后构造恶意包
+- **自定义协议逆向**：抓包分析协议结构，构造能触发服务端漏洞的包
