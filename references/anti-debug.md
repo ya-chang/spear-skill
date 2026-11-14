@@ -109,3 +109,39 @@ checks.forEach(name => {
 - GDB 能正常附着、设断点、单步
 - 程序不退出、不弹"调试检测"提示
 - Frida 能正常 hook 目标函数
+
+## 附：PEB 偏移表与 NtQueryInformationProcess
+
+### PEB 标志偏移（x64）
+| 字段 | 偏移 | 调试时值 | 正常值 |
+|---|---|---|---|
+| `BeingDebugged` | `PEB+0x02` | 1 | 0 |
+| `NtGlobalFlag` | `PEB+0xBC` | `0x70` (FLG_HEAP_*) | 0 |
+| `ProcessHeap.Flags` | Heap+0x40 | `0x40000062` | `0x00000002` |
+| `ProcessHeap.ForceFlags` | Heap+0x44 | `0x40000060` | 0 |
+
+```asm
+mov rax, gs:[0x60]    ; PEB
+movzx eax, byte [rax+0x02]  ; BeingDebugged
+test eax, eax
+jnz debugger_detected
+```
+绕过：将四个字段全部清零，ScyllaHide 可自动完成。
+
+### NtQueryInformationProcess 检测
+| InfoClass | 值 | 调试时返回 |
+|---|---|---|
+| `ProcessDebugPort` | 0x07 | 非零端口 |
+| `ProcessDebugObjectHandle` | 0x1E | 有效句柄 |
+| `ProcessDebugFlags` | 0x1F | 0（反转） |
+
+绕过：Hook `ntdll!NtQueryInformationProcess`，按 info class 返回干净值。
+
+### 硬件断点检测
+```c
+CONTEXT ctx;
+ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+GetThreadContext(GetCurrentThread(), &ctx);
+// 检查 DR0-DR7 是否非零 → 检测到硬件断点
+```
+绕过：清空 DR0-DR7，或用无痕 Hook。
