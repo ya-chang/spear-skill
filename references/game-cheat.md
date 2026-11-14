@@ -206,3 +206,98 @@ __asm__ __volatile__(
 4. **调试器检测** → Patch/绕过，或 DMA 完全绕开
 5. **代码完整性** → 只改数据不改代码，或运行时动态修改不触发 CRC
 6. **行为分析** → 模拟人类操作节奏，避免机械式操作
+
+## 引擎逆向高级技术
+
+### Unreal Engine 逆向（UE3/UE4/UE5）
+
+**识别特征：**
+- 静态：`UE4Game.exe`/`UE5Game.exe`、`GEngine.dll`、`.pak` 文件、`UObject`/`UFunction`/`FString` 模式
+- 运行时 AOB 签名：
+
+| 目标 | AOB 签名 |
+|---|---|
+| GObjects | `48 8B 05 ?? ?? ?? ?? 48 8B 0C C8` |
+| GNames | `48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 33 C0` |
+| ProcessEvent | `E8 ?? ?? ?? ?? 48 8B CF E8 ?? ?? ?? ??` |
+
+**Auto SDK 生成：**
+```sh
+UE4Dumper.exe -pid <target_pid> -dump
+# 生成 Classes.hpp / Offsets.hpp / Functions.cpp，加载到 IDA 交叉引用写 ProcessEvent hook
+```
+
+**自动对象 dumper（Python + pymem）：**
+```python
+from pymem import Pymem
+pm = Pymem("game.exe")
+gobjects = pm.read_int(0x12345678)  # 通过 sig scan 找到
+for i in range(1024):
+    obj_ptr = pm.read_int(gobjects + i * 4)
+    name = pm.read_string(obj_ptr + 0x18)
+    print(f"[+] Object {i}: {name}")
+```
+
+**引擎工具对照：**
+| 引擎 | 工具 | 用途 |
+|---|---|---|
+| Unity | Il2CppDumper, AssetRipper | dump C# 类、元数据 |
+| Unreal | UE4Dumper, SDK Gen | 生成头文件、定位 hook |
+| WebGL | wasm-decompile, DevTools | 导出分析、JS 互操作 |
+| Lua | Frida, LuaJIT 工具 | dump 全局、hook 逻辑 |
+
+### WebAssembly 逆向
+
+**工具：** wasm-decompile（binaryen）、wasm2wat（WABT）、r2 -AA file.wasm、ghidra_wasm_plugin
+**运行时 Hook：**
+```js
+const original = WebAssembly.instantiate;
+WebAssembly.instantiate = async function(buffer, importObj) {
+    console.log("[+] Hooked WASM instantiate");
+    return original.call(this, buffer, importObj);
+};
+// 或 Hook eval/Function
+Function = new Proxy(Function, {
+    apply(target, thisArg, args) { console.log("Eval:", args[0]); return Reflect.apply(...arguments); }
+});
+```
+逆向 exports 识别业务函数（heal()/moveTo()/attack()）。
+
+### Lua 引擎逆向
+
+**Hook 目标：** `lua_getglobal`、`lua_setglobal`、`lua_pcall`
+**枚举 Lua 全局表：**
+```c
+int n = lua_gettop(L);
+lua_pushnil(L);
+while (lua_next(L, LUA_GLOBALSINDEX)) {
+    printf("%s\n", lua_tostring(L, -2));
+    lua_pop(L, 1);
+}
+```
+**Frida 动态劫持：**
+```js
+Interceptor.attach(Module.findExportByName(null, "lua_pcall"), {
+    onEnter(args) { console.log("Calling Lua:", args[1]); }
+});
+```
+
+### 堆喷射与内存映射差异
+
+**堆喷射：** 大量分配填充堆，控制目标对象落在预定地址，用于覆盖指针/返回地址。
+**内存映射差异：** 对比两次内存映射，定位新增/修改的 RWX 区域、隐藏模块、动态分配的作弊代码。
+
+### CE Mono Framework（Unity 游戏）
+- CE 的 Mono 框架支持直接读取 Unity 对象，无需 IL2CPP 分析
+- 用 CE Lua 脚本遍历 Mono 对象树，修改属性（血量/坐标等）
+
+### 代码洞注入（Code Cave）
+在目标进程的代码段找空闲空间（NOP 区域），写入跳转指令跳入自己的代码，执行完再跳回。
+- 检测代码洞：搜索连续 NOP 或未使用区域
+- 注入：写入 `jmp cave` + `jmp back`，cave 内放作弊逻辑
+- 比 DLL 注入更隐蔽，无需创建新模块
+
+### 隐身注入策略
+- 不创建新进程/模块，复用已有模块的内存空间
+- 用 AOB 扫描定位目标后直接修改内存
+- 配合代码洞注入，避免模块加载被检测
