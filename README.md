@@ -22,6 +22,8 @@ spear/
   references/
     toolchain.md                # 工具链装配（apt/pip，含 aarch64 proot 说明）
     re-methodology.md           # 通用逆向四阶段方法论
+    ida-reverse.md              # IDA Pro 深度反编译分析
+    radare2.md                  # radare2/r2 命令行分析
     unpacking.md                # 脱壳（UPX/商业壳/Android DEX 壳）
     anti-debug.md               # 反调试检测与绕过
     deobfuscation.md            # 去混淆（平坦化/字符串/虚假控制流/间接调用/SMC）
