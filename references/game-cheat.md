@@ -436,3 +436,120 @@ Ring0 驱动注入、EPT 内存重定向（VT-x）、Patch PTE 隐藏页、Hyper
 - **Hook NtOpenFile：** Frida 拦截授权查询
 - **VMProtect 3.x：** Triton 解码 x86 操作码
 - **Shellcode 工程：** ESP 覆盖（渲染函数钩子执行）、多态 XOR 混淆载荷
+
+## 自动化脚本详解
+
+游戏自动化通过脚本模拟玩家操作，实现挂机、刷副本、日常任务。
+
+| 方式 | 原理 | 适用场景 |
+|---|---|---|
+| 键鼠模拟 | 模拟鼠标键盘输入 | 简单重复操作 |
+| 图像识别 | 截图+模板匹配 | 需判断画面内容 |
+| 内存读写 | 直接读游戏数据 | 数据精确获取 |
+| 协议模拟 | 直接发网络包 | 无需客户端 |
+
+**开发流程：** 分析操作流程 → 分解步骤 → 确定触发条件 → 选择识别方式 → 编写脚本 → 测试优化
+
+**模拟输入（Windows API）：**
+```c
+void mouse_move(int x, int y) { SetCursorPos(x, y); }
+void mouse_click(int x, int y) {
+    SetCursorPos(x, y);
+    mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0);
+    Sleep(50);
+    mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0);
+}
+void mouse_right_click(int x, int y) {
+    SetCursorPos(x, y);
+    mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0);
+    Sleep(50);
+    mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0);
+}
+```
+
+**图像识别：** OpenCV 模板匹配定位 UI 元素；**OCR：** 文字识别读取画面文字；**AutoHotKey：** 脚本化键鼠操作。
+
+## DLL 注入技术详解
+
+| 注入方法 | 原理 | 适用场景 |
+|---|---|---|
+| CreateRemoteThread | 远程线程调 LoadLibrary | 最经典通用 |
+| SetWindowsHookEx | 消息钩子 | GUI 程序 |
+| APC 注入 | 异步过程调用 | 线程挂起时 |
+| Process Hollowing | 替换进程内存 | 高级隐藏 |
+| Reflective Injection | 内存中反射加载 | 免落地 |
+
+**CreateRemoteThread 模板：**
+```c
+BOOL InjectDLL(DWORD pid, const char* dllPath) {
+    HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
+    LPVOID remoteMem = VirtualAllocEx(hProcess, NULL, strlen(dllPath)+1,
+                                       MEM_COMMIT, PAGE_READWRITE);
+    WriteProcessMemory(hProcess, remoteMem, dllPath, strlen(dllPath)+1, NULL);
+    FARPROC loadLib = GetProcAddress(GetModuleHandle("kernel32.dll"), "LoadLibraryA");
+    HANDLE hThread = CreateRemoteThread(hProcess, NULL, 0,
+        (LPTHREAD_START_ROUTINE)loadLib, remoteMem, 0, NULL);
+    WaitForSingleObject(hThread, 5000);
+    CloseHandle(hThread);
+    VirtualFreeEx(hProcess, remoteMem, 0, MEM_RELEASE);
+    CloseHandle(hProcess);
+    return TRUE;
+}
+```
+
+## Hook 技术类型对比
+
+| 类型 | 原理 | 难度 | 稳定性 | 适用场景 |
+|---|---|---|---|---|
+| Inline Hook | 修改函数入口指令（5字节 JMP） | 中 | 高 | 任意函数 |
+| IAT Hook | 修改导入表函数指针 | 低 | 高 | 导入的 API |
+| EAT Hook | 修改导出表函数指针 | 低 | 中 | 导出的函数 |
+| VMT Hook | 修改虚函数表指针 | 低 | 高 | C++ 虚函数 |
+| 异常 Hook | 利用异常处理机制 | 高 | 中 | 无修改检测场景 |
+
+- **Inline Hook**：用 MinHook（推荐），x64 需处理 5 字节跳转和重定位
+- **VMT Hook**：替换 vtable 中的函数指针，适用于 COM 接口/C++ 多态/游戏引擎对象
+
+## 主机平台特化
+
+### PlayStation（PS4/PS5）
+- 前提：特定固件漏洞、安装自制系统（HEN/Mira）
+- 工具：IDA Pro（MIPS/ARM）、PS4 SDK、Apollo Save Tool（存档编辑）、PS4 Cheater（内存搜索）
+- 存档修改：导出存档 → Apollo/Save Wizard 解密 → 修改 → 重新加密导入
+
+### Xbox（One/Series）
+- 开发者模式可侧载应用（开发者账号 $19/年）
+- 系统安全性高，主要通过存档修改或网络协议分析
+
+### Nintendo Switch
+- 自制固件 + 漏洞利用，内存修改与存档编辑
+
+### 通用存档修改
+- 存档解密 → 分析结构 → 修改数据 → 重新加密
+
+## PC 平台 DirectX Hook
+
+**版本检测：** 查看游戏目录 DLL（d3d9.dll/d3d11.dll/d3d12.dll）、Process Monitor 监控模块、Dependencies 查导入表。
+
+**DX9 Hook：**
+1. 创建 Dummy D3D9 设备获取 VMT
+2. 记录关键函数：EndScene(index 42)、Reset(index 16)、Present(index 17)
+3. VMT Hook 替换目标函数
+4. Hook 中初始化 ImGui 绘制 ESP/菜单
+
+**DX11 Hook：**
+- Hook `IDXGISwapChain::Present`、`ID3D11DeviceContext::DrawIndexed`
+- 创建 Dummy DXGI SwapChain → 获取 VMT → Hook Present → DX11 绘制
+
+## libmem 库（跨语言内存操作）
+
+libmem 是跨语言的内存读写库，支持 Python/C++/Rust。
+- **核心 API**：查找进程、枚举进程、检查存活、读写内存、指针链追踪
+- 适合快速开发内存读写工具，跨平台跨语言
+
+## C++ 外挂开发基础
+
+- **环境**：Visual Studio 2022+、CMake、依赖库（MinHook、libmem 等）
+- **Windows API 常用**：OpenProcess、ReadProcessMemory、WriteProcessMemory、CreateRemoteThread
+- **内存操作基础**：基址+偏移、指针链追踪（多级指针解析）
+- **开发流程**：环境搭建 → 内存扫描定位 → 指针链追踪 → 编写读写/Hook → 测试
