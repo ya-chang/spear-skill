@@ -2,10 +2,12 @@
 name: spear
 description: >
   长枪 spear — 一体化逆向工程与渗透测试技能。整合脱壳、反调试绕过、去混淆、
-  VM/字节码逆向、二进制保护绕过、.NET 逆向、Linux 动态分析、Hikari/OLLVM 明文恢复、
-  ELF/APK 本地 patch、影安壳脱修、内存外挂与渗透打点全链路。当用户提到逆向、反编译、
+  VM/字节码逆向、二进制保护绕过、pwn 利用链、.NET 逆向、Linux 动态分析、Hikari/OLLVM 明文恢复、
+  ELF/APK 本地 patch、APK/移动逆向、前端 JS 逆向、恶意代码分析、固件/IoT 渗透、EDR 绕过、
+  API 安全、跨版本符号迁移、影安壳脱修、内存外挂与渗透打点全链路。当用户提到逆向、反编译、
   脱壳、去混淆、反调试、VM 字节码、注册机/keygen、激活绕过、内存修改、外挂、DLL 注入、
-  Frida、IDA/Ghidra/r2、PE/ELF/APK/SO 分析、抓包协议、渗透、打点、漏洞利用、CTF 时使用。
+  Frida、IDA/Ghidra/r2、PE/ELF/APK/SO 分析、抓包协议、APK 逆向、JS 逆向、恶意代码、固件、
+  EDR 绕过、API 安全、pwn、渗透、打点、漏洞利用、CTF 时使用。
   先读 references/ 下对应 playbook 再执行，不要凭空臆造步骤。
 ---
 
@@ -24,10 +26,19 @@ description: >
 | 控制流平坦化/字符串加密/混淆 | `references/deobfuscation.md` |
 | 自定义 VM/字节码保护 | `references/vm-bytecode.md` |
 | 打 pwn / 绕过 ASLR·PIE·NX·canary | `references/binary-protection.md` |
+| 有漏洞点，写稳定 exploit | `references/pwn-chain.md` |
 | .NET / ConfuserEx 逆向 | `references/dotnet.md` |
 | Linux 下 GDB/r2/Frida/angr 协同 | `references/linux-dynamic.md` |
 | Hikari/OLLVM AArch64 明文恢复 | `references/hikari-deobfuscation.md` |
 | ELF/APK 本地 patch、linker 假加载脱壳、影安壳 | `references/elf-apk-patch.md` |
+| Android APK 逆向（jadx/apktool/smali/重打包） | `references/apk-reverse.md` |
+| Android+iOS 移动逆向、SSL Pinning/Root 绕过 | `references/mobile-reverse.md` |
+| 前端 JS 逆向、签名链路、补环境复现 | `references/js-reverse.md` |
+| 恶意代码分析、YARA/Sigma/IOC | `references/malware-analysis.md` |
+| 固件 / IoT 渗透（binwalk/EMBA/仿真） | `references/firmware-pentest.md` |
+| EDR / AV 绕过（unhook/syscall/ETW/AMSI） | `references/edr-bypass.md` |
+| API 安全测试（REST/GraphQL/JWT/OAuth） | `references/api-security.md` |
+| 跨版本符号迁移 / 二进制差分 | `references/binary-diff.md` |
 | 游戏外挂/内存读写/注入/协议 | `references/game-cheat.md` |
 | 网站/API/内网渗透打点 | `references/pentest-playbook.md` |
 | 完整破解链路（脱壳→反调试→VM→去混淆→keygen/patch） | `references/crack-workflow.md` |
