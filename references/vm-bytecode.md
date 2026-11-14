@@ -81,3 +81,50 @@ def disasm(bytecode, base=0):
 - 反汇编器能完整覆盖字节码，无 unknown 残留（或已标注）
 - 还原解释器输出与原程序一致
 - 能用高级代码等价替换 VM 校验
+
+## 完整反汇编器示例
+
+```python
+OPCODES = {
+    0x00: ("nop",  0),    # (助记符, 操作数字节数)
+    0x01: ("push", 1),
+    0x02: ("pop",  0),
+    0x03: ("add",  0),
+    0x04: ("sub",  0),
+    0x05: ("xor",  0),
+    0x06: ("cmp",  0),
+    0x07: ("jmp",  2),
+    0x08: ("je",   2),
+    0x09: ("jne",  2),
+    0x0A: ("mov",  2),
+    0x0B: ("load", 1),
+    0x0C: ("store",1),
+    0x0D: ("print",0),
+    0x0E: ("read", 0),
+    0xFF: ("halt", 0),
+}
+
+def disassemble(bytecode):
+    pc = 0
+    while pc < len(bytecode):
+        op = bytecode[pc]
+        if op not in OPCODES:
+            print(f"  {pc:04x}: UNKNOWN {op:#04x}")
+            pc += 1
+            continue
+        mnemonic, operand_size = OPCODES[op]
+        operands = bytecode[pc+1:pc+1+operand_size]
+        operand_str = ' '.join(f'{b:#04x}' for b in operands)
+        print(f"  {pc:04x}: {mnemonic:8s} {operand_str}")
+        pc += 1 + operand_size
+
+# 从二进制提取字节码
+import struct
+with open('challenge', 'rb') as f:
+    f.seek(bytecode_offset)
+    bytecode = f.read(bytecode_length)
+
+disassemble(bytecode)
+```
+
+反汇编后按标准逆向分析：定位输入读取（read opcode）→ 追踪数据流到比较 → 确定成功/失败条件 → 提取校验逻辑（常为输入经 XOR/ADD 变换后与常数比较）。
