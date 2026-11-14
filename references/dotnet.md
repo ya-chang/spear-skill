@@ -68,3 +68,33 @@ mono target.exe
 
 - 注册机生成的序列号能通过校验
 - 反编译代码与运行时行为一致
+
+## de4dot 去混淆用法
+
+```bash
+# 自动识别并去除混淆
+de4dot suspect.exe -o suspect_cleaned.exe
+
+# 强制指定混淆器
+de4dot suspect.exe -p cf    # ConfuserEx
+de4dot suspect.exe -p sa    # SmartAssembly
+de4dot suspect.exe -p dr    # Dotfuscator
+de4dot suspect.exe -p rv    # Reactor
+de4dot suspect.exe -p bl    # Babel.NET
+
+# 详细输出调试
+de4dot -v suspect.exe -o suspect_cleaned.exe
+
+# 多文件程序集
+de4dot suspect.exe suspect_helper.dll -o cleaned/
+```
+
+**.NET 混淆器对照：**
+| 混淆器 | 特征 |
+|---|---|
+| ConfuserEx | 字符串加密、控制流、反调试、防篡改 |
+| SmartAssembly | 字符串编码、流混淆、裁剪 |
+| Dotfuscator | 重命名、字符串加密、控制流 |
+| .NET Reactor | 原生代码生成、necrobit、反调试 |
+| Babel.NET | 字符串加密、资源加密、代码虚拟化 |
+| Crypto Obfuscator | 字符串加密、反调试、水印 |
