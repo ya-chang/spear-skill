@@ -28,6 +28,8 @@ spear/
     vm-bytecode.md              # 自定义 VM/字节码逆向
     binary-protection.md        # 二进制保护绕过（pwn 向）
     pwn-chain.md                # pwn 利用链（栈/堆/内核，稳定 exploit）
+    patch-diff-exploit.md       # N-day 补丁差分到利用（CVE 复现/武器化）
+    attack-chain.md             # 多阶段攻击链编排（从 A 打到 B）
     dotnet.md                   # .NET 逆向（dnSpy/去混淆/注册机）
     linux-dynamic.md            # Linux 动态分析协同（GDB/r2/Frida/angr）
     hikari-deobfuscation.md     # Hikari/OLLVM 明文恢复（L1–L4）
