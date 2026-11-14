@@ -701,3 +701,315 @@ UEFIExtract dump.bin / UEFIDump dump.bin
 - **防护层**：代码完整性校验、内存保护
 - **响应层**：举报系统、云端行为分析
 - **设计原则**：多层级检测、行为分析、云端协同
+
+## libmem 库详细 API（补充）
+
+libmem 是跨语言内存读写库，支持 C/C++/Rust/Python，平台 Windows/Linux/FreeBSD（x86/x64）。
+- **GitHub**：https://github.com/rdbo/libmem
+
+**安装：**
+```bash
+pip install libmem                    # Python
+```
+```cmake
+# C++ CMake
+include(FetchContent)
+FetchContent_Declare(libmem-config
+    URL "https://raw.githubusercontent.com/rdbo/libmem/config-v1/libmem-config.cmake"
+    DOWNLOAD_NO_EXTRACT TRUE)
+FetchContent_MakeAvailable(libmem-config)
+set(CMAKE_PREFIX_PATH "${libmem-config_SOURCE_DIR}" "${CMAKE_PREFIX_PATH}")
+set(LIBMEM_DOWNLOAD_VERSION "5.1.4")
+find_package(libmem CONFIG REQUIRED)
+target_link_libraries(your_target PRIVATE libmem::libmem)
+```
+```toml
+# Rust Cargo.toml
+[dependencies]
+libmem = "5"
+```
+
+**核心 API（Python）：**
+```python
+from libmem import *
+
+# 进程操作
+process = find_process("game.exe")
+print(f"PID: {process.pid}, Name: {process.name}")
+for proc in enum_processes():
+    print(f"{proc.pid}: {proc.name}")
+if is_process_alive(process):
+    print("Process is running")
+
+# 模块操作
+module = find_module_ex(process, "game.dll")
+print(f"Base: {hex(module.base)}, Size: {module.size}")
+for mod in enum_modules_ex(process):
+    print(f"{mod.name} @ {hex(mod.base)}")
+addr = find_symbol_address(module, "get_player_health")
+
+# 内存读写
+health = read_memory_ex(process, health_addr, 4)
+health_int = int.from_bytes(health, 'little')
+write_memory_ex(process, health_addr, int(999).to_bytes(4, 'little'))
+# 深度指针追踪：base + offset1 -> ptr1 + offset2 -> ptr2 + offset3 -> final
+final_addr = deep_pointer_ex(process, module.base + 0x1234, [0x10, 0x20, 0x30])
+
+# 模式扫描（?? 为通配符）
+pattern = "55 8B EC 83 E4 F8 ?? ?? ?? ?? ?? ?? 56 8B F1"
+addr = sig_scan_ex(process, pattern, module.base, module.size)
+data = b"\x89\x5C\x24\x08"
+addr = data_scan_ex(process, data, module.base, module.size)
+
+# 汇编/反汇编
+payload = assemble("mov eax, 1; ret", 64)
+code = bytes([0x55, 0x48, 0x89, 0xE5])
+for inst in disassemble(code, 64, 0):
+    print(f"{hex(inst.address)}: {inst.mnemonic} {inst.op_str}")
+```
+
+**C++ Inline Hook：**
+```cpp
+#include <libmem/libmem.h>
+void hooked_function(int arg1) {
+    printf("Hooked! arg1=%d\n", arg1);
+    original_function(arg1);
+}
+lm_address_t target = LM_FindSymbolAddress(&module, "target_function");
+LM_HookCode(target, (lm_address_t)hooked_function, &trampoline);
+```
+
+**实战：特征码扫描 + 修改：**
+```python
+process = find_process("game.exe")
+module = find_module_ex(process, "game.exe")
+damage_pattern = "55 8B EC 83 E4 F8 83 EC 10 56 8B F1"
+damage_func = sig_scan_ex(process, damage_pattern, module.base, module.size)
+if damage_func:
+    write_memory_ex(process, damage_func + 0x15, b"\x90" * 5)  # NOP 扣血指令
+```
+
+**常见问题：**
+- 找不到进程 → 以管理员权限运行
+- 写入失败 → 用 `ProtMemoryEx` 先改内存保护为可写
+- 特征码找不到 → 版本变化，重新用 CE/x64dbg 分析
+- 指针链失效 → 更新后用 CE 重新扫描
+
+## 驱动级开发详解（补充）
+
+### WDF 驱动基础
+```c
+#include <ntddk.h>
+#include <wdf.h>
+
+VOID DriverUnload(_In_ WDFDRIVER Driver) {
+    UNREFERENCED_PARAMETER(Driver);
+    KdPrint(("Driver unloaded\n"));
+}
+
+NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject,
+                     _In_ PUNICODE_STRING RegistryPath) {
+    NTSTATUS status;
+    WDF_DRIVER_CONFIG config;
+    WDF_DRIVER_CONFIG_INIT(&config, WDF_NO_EVENT_CALLBACK);
+    config.EvtDriverUnload = DriverUnload;
+    status = WdfDriverCreate(DriverObject, RegistryPath,
+        WDF_NO_OBJECT_ATTRIBUTES, &config, WDF_NO_HANDLE);
+    if (!NT_SUCCESS(status)) return status;
+
+    WDFDEVICE device;
+    WDF_DEVICE_CONFIG device_config;
+    WDF_DEVICE_CONFIG_INIT(&device_config, WDF_NO_EVENT_CALLBACK);
+    UNICODE_STRING device_name;
+    RtlInitUnicodeString(&device_name, L"\\Device\\GameHelper");
+    PWDFDEVICE_INIT device_init = WdfControlDeviceInitAllocate(
+        WdfGetDriver(), &SDDL_DEVOBJ_SYS_ALL_ADM_ALL);
+    WdfDeviceInitAssignName(device_init, &device_name);
+    status = WdfDeviceCreate(&device_init, WDF_NO_OBJECT_ATTRIBUTES, &device);
+    if (!NT_SUCCESS(status)) return status;
+
+    UNICODE_STRING sym_link;
+    RtlInitUnicodeString(&sym_link, L"\\DosDevices\\GameHelper");
+    WdfDeviceCreateSymbolicLink(device, &sym_link);
+    return STATUS_SUCCESS;
+}
+```
+
+**环境搭建：** 安装 WDK，启用测试签名（`bcdedit /set testsigning on` 重启生效），或启动时按 F8 禁用驱动签名强制。
+
+### 内核内存读写
+
+**MmCopyVirtualMemory（跨进程读写）：**
+```c
+NTSTATUS kernel_read_memory(PEPROCESS src_proc, PVOID src_addr,
+                            PVOID dst_buf, SIZE_T size) {
+    SIZE_T bytes_read = 0;
+    return MmCopyVirtualMemory(src_proc, src_addr, PsGetCurrentProcess(),
+        dst_buf, size, KernelMode, &bytes_read);
+}
+
+NTSTATUS kernel_write_memory(PEPROCESS dst_proc, PVOID dst_addr,
+                             PVOID src_buf, SIZE_T size) {
+    SIZE_T bytes_written = 0;
+    return MmCopyVirtualMemory(PsGetCurrentProcess(), src_buf, dst_proc,
+        dst_addr, size, KernelMode, &bytes_written);
+}
+```
+
+**MDL 方式：**
+```c
+PVOID map_memory_mdl(PEPROCESS process, PVOID address, SIZE_T size) {
+    PMDL mdl = IoAllocateMdl(address, size, FALSE, FALSE, NULL);
+    if (!mdl) return NULL;
+    __try {
+        MmProbeAndLockPages(mdl, KernelMode, IoWriteAccess);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        IoFreeMdl(mdl);
+        return NULL;
+    }
+    return MmMapLockedPagesSpecifyCache(mdl, KernelMode, MmCached, NULL, FALSE, NormalPagePriority);
+}
+// 使用后 MmUnmapLockedPages + IoFreeMdl
+```
+
+**辅助函数：**
+```c
+// 进程名 → PEPROCESS
+PEPROCESS get_process_by_name(const wchar_t* process_name) {
+    for (ULONG pid = 0; pid < 100000; pid += 4) {
+        PEPROCESS ep;
+        if (NT_SUCCESS(PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)pid, &ep))) {
+            UCHAR* image_name = PsGetProcessImageFileName(ep);
+            // 转换并比较，命中则返回
+            ObDereferenceObject(ep);
+        }
+    }
+    return NULL;
+}
+// 获取模块基址：遍历 PEB → Ldr → InLoadOrderModuleList
+```
+
+### 隐藏技术
+
+**进程隐藏（摘链）：**
+```c
+void hide_process(PEPROCESS process) {
+    PLIST_ENTRY active_process_link = (PLIST_ENTRY)(
+        (PUCHAR)process + active_process_links_offset);
+    active_process_link->Blink->Flink = active_process_link->Flink;
+    active_process_link->Flink->Blink = active_process_link->Blink;
+    active_process_link->Flink = active_process_link;  // 自引用防遍历出错
+    active_process_link->Blink = active_process_link;
+}
+```
+
+**模块隐藏（摘 PEB 模块链）：**
+```c
+void hide_module(PEPROCESS process, const wchar_t* module_name) {
+    PPEB peb = PsGetProcessPeb(process);
+    if (!peb) return;
+    PPEB_LDR_DATA ldr = peb->Ldr;
+    PLIST_ENTRY head = &ldr->InLoadOrderModuleList;
+    PLIST_ENTRY entry = head->Flink;
+    while (entry != head) {
+        PLDR_DATA_TABLE_ENTRY module = CONTAINING_RECORD(
+            entry, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks);
+        if (module->BaseDllName.Buffer &&
+            wcsstr(module->BaseDllName.Buffer, module_name)) {
+            entry->Blink->Flink = entry->Flink;
+            entry->Flink->Blink = entry->Blink;
+            break;
+        }
+        entry = entry->Flink;
+    }
+}
+```
+
+**注册表隐藏：** hook `RegQueryValueExW`，命中目标键返回 `STATUS_NOT_FOUND`。
+
+### 内核通信（IOCTL）
+```c
+#define IOCTL_READ_MEMORY  CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define IOCTL_WRITE_MEMORY CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define IOCTL_GET_MODULE   CTL_CODE(FILE_DEVICE_UNKNOWN, 0x802, METHOD_BUFFERED, FILE_ANY_ACCESS)
+```
+用户态通过 `DeviceIoControl` 发 IOCTL，驱动在 `DispatchDeviceControl` 中处理，实现用户态↔内核态通信。
+
+### 反检测与对抗
+- 驱动签名：使用合法签名或测试签名，避免被反作弊检测未签名驱动。
+- 隐藏驱动对象：从 `PsLoadedModuleList` 摘链，避免被驱动扫描发现。
+- 规避回调监控：避免注册易被检测的回调，或用未文档化机制。
+- 对抗完整性校验：不修改被校验的代码页，或用内存空洞/影子页。
+
+## 硬件指纹伪装（HWID Spoof）
+
+### 检测项与修改方式
+
+| 项目 | 修改方式 |
+|---|---|
+| 主板序列号 | 注册表修改 |
+| 硬盘序列号 | VolumeID 工具 |
+| MAC 地址 | 注册表修改 |
+| CPU ID | 硬件级，不可修改 |
+| GPU ID | 硬件级，不可修改 |
+| TPM | 可以清除/重置 |
+| Windows GUID | 注册表修改 |
+| 显示器 EDID | 可修改 |
+
+参考：https://github.com/RejiDev/game-hacking-guidelines/blob/master/techniques/hwid.md
+
+## Windows 安全特性绕过（补充）
+
+### VBS（Virtualization Based Security）
+Windows 虚拟化安全，将关键安全功能放在隔离的虚拟机中。
+绕过：禁用 VBS、利用漏洞突破虚拟化边界。
+
+### HVCI（Hypervisor-protected Code Integrity）
+超级管理程序保护的代码完整性，确保只有签名代码能在内核执行。
+绕过：利用已签名的合法驱动、BYOVD（自带漏洞驱动）。
+
+### CET（Control-flow Enforcement Technology）
+Intel 控制流保护，防止 ROP/JOP。
+绕过：利用未启用 CET 的代码路径。
+
+### ETW（Event Tracing for Windows）
+Windows 事件追踪，反外挂用它监控 API 调用。
+绕过：修补 ETW 函数、修改 ETW Provider 注册（如清零 `EtwpProviderTable`）。
+
+## 外挂开发 8 阶段工作流
+
+```
+阶段 0: 侦察
+  - 目标分析（引擎、反外挂、网络架构）
+  - 环境搭建（虚拟机、调试器、工具链）
+
+阶段 1: 静态分析
+  - 二进制逆向（IDA/Ghidra）
+  - 偏移提取（关键数据结构、函数地址）
+
+阶段 2: 动态分析
+  - 实时内存验证（只读，不修改）
+  - 函数调用跟踪
+
+阶段 3: 概念验证
+  - 最小渲染（ESP 框架）
+  - 首次内存写入
+
+阶段 4: 核心构建
+  - 完整功能实现
+  - 性能优化
+
+阶段 5: 加固
+  - 检测规避
+  - 反调试保护
+  - 代码混淆
+
+阶段 6: 测试
+  - 多会话验证
+  - 反外挂兼容性测试
+
+阶段 7: 维护
+  - 游戏更新适配
+  - 偏移更新
+  - 用户反馈处理
+```
