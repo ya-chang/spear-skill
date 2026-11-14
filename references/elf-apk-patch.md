@@ -93,3 +93,34 @@ apksigner verify dist/signed.apk
 - 预期业务路由可达
 - 无致命日志
 - patch 字节级差异仅在目标处
+
+## 附：Ash-12 类 ELF 特化处理
+
+当遇到 Ash-12 类 Android AArch64 ELF 样本时（文件扩展名像 `.sh` 但实际是 ELF64 PIE，尾部附加加密 payload/trailer，通过 memfd 执行链加载 payload），按以下分支处理。
+
+### 适用信号
+同时出现多项时进入本分支：
+- 文件扩展名像 `.sh`，但 `file`/`readelf` 显示为 Android AArch64 ELF64 ET_DYN/PIE
+- 外层 ELF 通过 `/proc/self/exe` 自读，尾部有固定 magic、payload offset、payload size
+- 外层含远程卡密/授权字段（`kami`/`markcode`/`sign`/`code`/`time`/`vip`）
+- 成功路径写 `/data/local/tmp/card`，解密 payload 后经 `memfd_create`/`/proc/self/fd/%d` 执行
+
+### 阶段流程
+1. **基线盘点**：记录 SHA256、文件大小、entry、program headers。原文件只读。
+2. **trailer 与 payload 范围恢复**：从文件尾部解析容器 trailer（0x28 字节：magic/payload_offset/payload_size/duplicate_offset/reserved）。验证 `payload_offset + payload_size == trailer_offset`，payload+trailer 是不可破坏区域，patch 只允许在外层 loader 代码段。
+3. **外层字符串与 payload 解密复现**：定位字符串解密函数、cipher blob，复现 payload key 派生和 RC4 KSA/PRGA。解密后验证 ELF magic(`7f454c46`)、架构、大小、SHA256。
+4. **外层授权链定位**：从成功/失败提示、`/data/local/tmp/card`、`/proc/self/exe`、`memfd` 字符串反向找 main/dispatch。patch 点选"远程授权返回后、失败分支之前"的最小门控点，保留 argv/card 写入与 payload 执行链。不以"跳到退出/return"为成功路径。
+5. **等长 patch**：expected bytes 完全匹配，patch 等长，输出新文件绝不覆盖原文件。ELF header、program headers、entry、file size、payload、trailer 全部 unchanged。
+6. **patch 后重提取验证**：trailer 仍通过 magic/range/size 检查，解密 payload SHA256 与 patch 前一致。
+7. **真机动态验证**：用新鲜证据（stdout/stderr/RC/logcat），不用过往记忆。无真机证据时标 `[DYNAMIC_UNVERIFIED]`。
+
+### 回滚条件
+expected bytes 不匹配、VA 无法映射 PT_LOAD、patch 导致 header/phdr/entry/size 变化、payload/trailer 任一字节变化、patch 后无法重提取相同 payload → 立即停止回滚。
+
+### 交付补充
+```
+Container: magic / payload_offset / payload_size / trailer_offset / checks
+Payload: encrypted SHA256 / decrypted SHA256 / decrypted ELF info
+Outer auth gate: auth function / main dispatch / patch VA+FileOff+old+new / disasm
+Boundary: STATIC_VERIFY_OK or FAIL / DYNAMIC_VERIFY_OK/FAIL/UNVERIFIED
+```
