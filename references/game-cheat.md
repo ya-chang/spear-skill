@@ -553,3 +553,69 @@ libmem 是跨语言的内存读写库，支持 Python/C++/Rust。
 - **Windows API 常用**：OpenProcess、ReadProcessMemory、WriteProcessMemory、CreateRemoteThread
 - **内存操作基础**：基址+偏移、指针链追踪（多级指针解析）
 - **开发流程**：环境搭建 → 内存扫描定位 → 指针链追踪 → 编写读写/Hook → 测试
+
+## Shellcode 工程
+
+**ESP 覆盖**：通过渲染函数钩子执行 shellcode。
+**多态 XOR**：压缩/混淆 shellcode 载荷，每次生成变体避免特征码匹配。
+
+## DRM 加载器分阶段逆向（Staged DRMs）
+
+现代 DRM（Denuvo、VMProtect 等）采用分阶段加载，运行时逐步解密真实代码。
+
+**逆向流程：**
+1. **检测分阶段行为**：观察程序运行中多次 mprotect/解密调用
+2. **定位真实入口（OEP）**：追踪加载器流程，找到原始代码入口
+3. **x64dbg 追踪加载器流程**：单步跟踪解密/加载阶段
+4. **VMProtect 加载器内部**：识别 VM 主循环、handler 表
+5. **VM handler 识别**：统计字节码频率，推断 opcode 语义
+6. **嵌套加载器脱壳**：多层加载器逐层剥离
+7. **反调试/反 dump 绕过**：Patch 检测点，ScyllaHide 等
+8. **手动 dump 重建**：dump 解密后内存，用 Scylla/PE-bear 修复 IAT/导入表
+9. **Denuvo 分阶段**：运行中 dump 解密 .text，重建 PE
+10. **加载器签名**：识别常见加载器特征
+11. **DRM 加载器模糊测试/变异**：对加载器做 fuzz，找解析缺陷
+
+**DRM 工具生态：** Scylla、PE-bear、ScyllaHide、Qiling Framework（重建 VM handler）、Triton（解码 VMProtect opcode）
+
+## AI/ML 增强
+
+**生成式作弊**：用 AI 生成自然的鼠标移动（GAN）、自动瞄准（YOLOv7+DeepSORT）、智能行为模拟。
+**高级技术**：强化学习训练游戏 agent（Unity ML-Agents/OpenAI Gym）、AI 驱动的反检测行为伪装。
+
+## 硬件级攻击
+
+- **DMA**：PCILeech + FPGA（FT601）实现不可见内存读写
+- **GPU 作弊**：CUDA 着色器卸载作弊逻辑（cuMemAlloc + cuLaunchKernel）
+- **Intel ME**：Red Unlock 代码注入
+- **SGX/SEV**：在 enclave 中运行受保护的作弊逻辑
+- **隐写术**：在纹理/资产中嵌入载荷
+
+## 固件分析（Console & PC Firmware）
+
+固件是反外挂和平台安全的基石，固件操控可实现：启动早期注入不可检测作弊、绕过安全启动/签名验证/TPM、完全控制内存/虚拟化/根级遥测。
+
+**UEFI dump-patch-injection：**
+| 用途 | 工具 |
+|---|---|
+| 固件提取 | UEFITool、Chipsec、Flashrom |
+| 修改 UEFI 变量 | RU.EFI、AMIBCP、H2OUVE |
+| 安全启动绕过 | UEFI Shell、EDK2 hacking |
+| Flash 读取 | CH341A SPI Programmer |
+
+```bash
+flashrom -p ch341a_spi -r dump.bin
+sudo chipsec_util spi dump BIOS.bin
+UEFIExtract dump.bin / UEFIDump dump.bin
+```
+
+**探索 DXE 模块：** 寻找 SecureBoot、SetupUtility、TPM、SmmAccess2 等。
+**Patch 启动流程：** 添加未签名 DXE 模块、Hook BootServices->StartImage、注入 payload 在 ExitBootServices() 后写 RAM。
+**注入 DXE 模块载荷：** 修改 UEFI .ffs 文件 → UEFITool 插入 → 刷入 patched ROM，载荷在 pre-OS 早期触发。
+
+**主机 Boot ROM 逆向：**
+- **Nintendo Switch**：Boot0/Boot1/pkg1/pkg2；漏洞 Fusée Gelée、Warmboot Handoff；工具 hekate、Lockpick_RCM、Atmosphere、TegraExplorer、HacTool
+- **PS5**：BootROM → Second Loader → Secure Kernel；LV0/LV1 Hypervisor 逆向
+- **Xbox Series**：Scarlett 启动链
+
+**固件攻击矩阵：** 从 BIOS/UEFI 到 hypervisor、bootloader 的完整攻击面，研究级固件工具链。
