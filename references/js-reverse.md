@@ -90,3 +90,81 @@ function genSign(params) {
 - 本地复现的签名与页面运行时一致
 - 多组输入验证稳定
 - 算法链路可独立复用
+
+## 七、WASM/字节码加密
+
+```javascript
+// Hook WASM 导出函数
+const origInstantiate = WebAssembly.instantiate;
+WebAssembly.instantiate = function(buffer, imports) {
+  console.log('[WASM] 加载模块，大小:', buffer.byteLength);
+  return origInstantiate.call(this, buffer, imports).then(result => {
+    const exports = result.instance.exports;
+    console.log('[WASM] 导出函数:', Object.keys(exports));
+    for (const [name, fn] of Object.entries(exports)) {
+      if (typeof fn === 'function') {
+        const origFn = fn;
+        exports[name] = function(...args) {
+          console.log(`[WASM.${name}] 入参:`, args);
+          const result = origFn.apply(this, args);
+          console.log(`[WASM.${name}] 返回:`, result);
+          return result;
+        };
+      }
+    }
+    return result;
+  });
+};
+// 下载 .wasm 文件后用 wasm-decompile / Ghidra 静态分析
+```
+
+## 八、JS 混淆还原工具
+
+```bash
+# synchrony - javascript-obfuscator 专用
+npm install -g synchrony
+synchrony deobfuscate input.js -o output.js
+
+# webcrack - webpack + obfuscator 还原
+npm install -g webcrack
+webcrack input.js -o output_dir
+
+# de4js - 在线反混淆器: https://lelinhtinh.github.io/de4js/
+# JStillery - 常量折叠 + 死代码消除
+```
+
+**动态调试技巧：**
+1. Sources 面板 → 搜索 `encrypt` / `sign` / `hash`
+2. 在匹配函数第一行打断点
+3. 触发登录/请求 → 断点命中 → 查看调用栈
+4. 沿调用栈向上找到密钥、IV 等参数来源
+
+## 九、密钥提取技巧
+
+```javascript
+// 1. 硬编码在 JS 中（最常见）
+// 搜索 Base64 字符串
+curl -s https://example.com/static/js/app.js | \
+  grep -oP '["'"'"'][A-Za-z0-9+/=]{16,}["'"'"']' | sort -u
+
+// 2. 从页面 HTML 中提取
+document.querySelectorAll('[data-key], [data-token], [data-secret], [name="csrf"]')
+
+// 3. 从接口响应获取（首次加载时后端下发密钥/公钥）
+
+// 4. 从 Cookie 中获取
+document.cookie.split(';').forEach(c => console.log(c.trim()))
+```
+
+## 十、加密分析工具速查
+
+| 工具 | 用途 | 命令/入口 |
+|---|---|---|
+| **synchrony** | javascript-obfuscator 反混淆 | `synchrony deobfuscate input.js -o out.js` |
+| **webcrack** | webpack + obfuscator 还原 | `webcrack input.js -o dir` |
+| **de4js** | 在线 JS 反混淆器 | 网页工具 |
+| **CyberChef** | 编码/解码/加解密瑞士军刀 | 网页工具 / 本地 |
+| **jwt.io** | JWT 在线解码调试 | 网页工具 |
+| **hashcat** | 哈希破解 | `hashcat -m 0 hash.txt wordlist` |
+| **openssl** | 证书/密钥/加密命令行 | `openssl enc -aes-256-cbc -in plain -out enc` |
+| **wasm-decompile** | WASM 反编译 | `wasm-decompile module.wasm` |
