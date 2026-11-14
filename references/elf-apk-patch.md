@@ -174,3 +174,46 @@ Patch SHA256: ...
 验证: VERIFY_OK / VERIFY_FAIL
 已验证项: [ ] expected bytes match [ ] ELF header unchanged [ ] Program Headers unchanged [ ] entry point unchanged
 ```
+
+## 硬约束（优先级最高，任何增强都不能覆盖）
+```
+[ ] 不破坏 ELF Header / Program Headers
+[ ] 不改 entry point（除非明确要求且完整验证）
+[ ] 优先等长 in-place patch，不改变文件大小
+[ ] 不破坏 appended payload / magic / size trailer
+[ ] 不改 payload 区域（除非明确要求）
+[ ] APK 替换 assets 后删除旧 META-INF、zipalign、apksigner verify
+[ ] patch 前 expected bytes 必须完全匹配
+[ ] patch 后验证 header、phdr、tail、hash、反汇编、运行行为
+[ ] 结论来自实际读取、反汇编、日志或真机检查
+```
+
+## 功能链卡点决策树
+```
+前端显示长期授权，但 ELF 报"卡密不存在" → 只 patch 了 UI/Java，回到 ELF 授权入口
+授权过了但 SIGSEGV → 跳过 success_init，改跳更早成功初始化块，恢复寄存器/栈变量
+输出"窗口化本程序/等待游戏启动"但无后续 → 授权已过，查目标包名、argv[1]、pidof、cmdline
+pidof 有 PID 但 ELF 找不到 → 检查扫描逻辑、多进程、cmdline 匹配
+游戏已启动但 UE4 超时 → 查 /proc/<pid>/maps、模块名/加载时机/等待时长
+UE4 找到但进程不可访问或注入失败 → 查 root 上下文、SELinux、/proc/<pid>/mem 权限、pwrite 返回值
+注入成功但功能无效 → 功能链跑通，查目标版本偏移、基址计算、写入字节、开关参数
+```
+
+## 悬浮窗/driver/纯内存注入判定
+不要把"没看到悬浮窗/刷入动画"直接判为 ELF 失败。分类：
+- **WebView 配置前端**：assets/index.html + JS Bridge，只负责配置
+- **Java 状态提示窗**：WindowManager + TextView，只显示启动/完成提示
+- **游戏内功能菜单**：Canvas/SurfaceView/GLSurfaceView/Overlay Service/native draw loop
+- **纯内存注入**：root 打开 /proc/<pid>/mem，按模块基址写补丁
+- **driver 链**：insmod/modprobe、.ko、/dev/*、sysfs/procfs、Magisk/KernelSU、ioctl
+
+静态搜索关键词：`SYSTEM_ALERT_WINDOW WindowManager TYPE_APPLICATION_OVERLAY`、`/proc/%d/mem pwrite process_vm_writev ptrace libUE4.so`、`insmod modprobe .ko ioctl magisk ksu`
+
+## APK 双载荷门控样本通杀
+**典型特征：** assets/bin/ 下至少两个高价值文件：
+- **gate ELF**：AArch64 ET_DYN，负责卡密/公告/时间/vip 判断，再执行后续 payload
+- **driver 入口**：文件头可能像 shell，自解压后执行内核/驱动/写内存链
+
+**Java/Kotlin 层：** WebView + JavascriptInterface/Bridge、saveConfig、flashDriver、startModule
+**native gate 字符串：** kami/markcode/sign/code/time/vip/msg/gg/app_gg
+**关键：** UI 状态文本不等同于 native 授权真实通过。
