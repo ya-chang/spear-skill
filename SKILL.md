@@ -21,6 +21,8 @@ description: >
 |---|---|
 | 不知道从哪下手 / 通用流程 | `references/re-methodology.md` |
 | 环境没工具 / 要装工具链 | `references/toolchain.md` |
+| IDA Pro 深度反编译分析 | `references/ida-reverse.md` |
+| radare2 / r2 命令行分析 | `references/radare2.md` |
 | 程序被加壳（UPX/商业壳） | `references/unpacking.md` |
 | 有反调试，调试器被拒 | `references/anti-debug.md` |
 | 控制流平坦化/字符串加密/混淆 | `references/deobfuscation.md` |
