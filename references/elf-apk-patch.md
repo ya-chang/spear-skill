@@ -124,3 +124,53 @@ Payload: encrypted SHA256 / decrypted SHA256 / decrypted ELF info
 Outer auth gate: auth function / main dispatch / patch VA+FileOff+old+new / disasm
 Boundary: STATIC_VERIFY_OK or FAIL / DYNAMIC_VERIFY_OK/FAIL/UNVERIFIED
 ```
+
+## 最稳 patch 点选择（详细）
+
+**核心原则：** 选择"远端授权请求返回之后、响应解析或失败分支之前"的最小位置。
+
+### 比较函数语义与回跳目标判定
+改写 `isVip`/`vip`/`code` 分支前，必须反汇编比较包装函数，建立 `equal`/`not equal`/零值/非零值真值表。不能按函数名或 `true` 字符串猜测返回语义（比较包装层可能返回 `1 & ~equal`）。
+
+对每个候选分支记录：比较结果寄存器、条件指令、跳转目标、落空块、以及二者各自的析构/资源检查/功能 UI/主菜单返回行为。只有跳转目标已证实为授权失败清理，且落空块进入原有功能链时，才允许将 `tbnz`/`cbnz` 改为 `nop`。
+
+### 字段分层
+当响应同时含 `token`/`endTime` 等成功状态字段和 `vip`/`isVip`/`code` 等判定字段时：
+```
+传输/协议错误（connect/HTTP/Error）→ 保留失败处理，不作为 patch 点
+状态字段（token/endTime/cache）     → 必须先完成解析，保留原 success_init 写入
+判定字段（vip/isVip/code）           → 只改其后的唯一条件分支，跳原 success_init
+充值/卡密回退（recharge/card input） → 仅失败路径，不伪造返回值替代状态初始化
+```
+
+### 成功路径选择
+```
+跳 success_init ：优先，保留后续初始化
+跳 success_tail ：高风险，可能漏初始化导致 SIGSEGV
+跳 main exit/return：通常错误，破坏 payload/driver/功能链
+改 ELF header/entry：常规禁止
+```
+
+### AArch64 patch 模板
+```asm
+// 条件失败分支改无条件成功
+b success_init
+// 清空失败跳转
+nop
+// 本地测试时间戳 + 跳转
+movz x0, #LOW16
+movk x0, #HIGH16, lsl #16
+b success_init
+```
+
+### 失败处理与回滚
+遇到以下情况停止并回滚：expected bytes 不匹配、VA 无法映射 PT_LOAD、patch 不等长、ELF Header/Program Headers/entry 改变、payload magic/offset/size 改变、APK 签名验证失败、成功路径依赖寄存器/栈变量无法确认、真机 SIGSEGV 且无法定位 success_init。
+
+### 输出格式
+```
+Patch 点: VA=<addr> FileOffset=<offset> OldBytes=<hex> NewBytes=<hex> Disasm=<expected asm>
+原始 SHA256: ...
+Patch SHA256: ...
+验证: VERIFY_OK / VERIFY_FAIL
+已验证项: [ ] expected bytes match [ ] ELF header unchanged [ ] Program Headers unchanged [ ] entry point unchanged
+```
