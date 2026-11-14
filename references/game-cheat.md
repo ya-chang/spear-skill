@@ -117,3 +117,92 @@ _, _, _, max_loc = cv2.minMaxLoc(res)
 - 读写/Hook 生效，游戏内表现符合预期
 - 协议收发正确，封包格式对齐
 - 自动化脚本稳定运行，不误触
+
+## 高级外挂技术（2025-2026）
+
+### DMA 硬件级内存读写
+通过 PCIe 接口直接读取系统内存，完全绕过操作系统和反外挂。
+
+- **工具**：PCILeech（开源，https://github.com/ufrisk/pcileech）、FPGA 自定义设备
+- **优势**：反外挂完全无法检测（硬件层面）、可读受保护内存、不触发软件级监控
+- **成本**：$300-500
+
+```c
+#include <pcileech.h>
+uint64_t game_base = 0x7FF612340000;
+uint32_t health = 0;
+pcileech_memread(game_base + 0x1A3B5C, &health, sizeof(health));
+```
+
+### 虚拟化层攻击（Hypervisor / EPT Hook）
+利用 CPU VT-x 虚拟化技术，在 Ring -1 层（比内核更高权限）拦截游戏。
+
+```
+1. 创建虚拟机，将游戏运行在 VMX non-root 模式
+2. 设置 EPT（Extended Page Table）映射
+3. 游戏访问被 Hook 页面时触发 VMExit
+4. 在 VMExit 处理中执行自定义逻辑
+5. 返回游戏继续执行
+```
+- **优势**：比内核驱动更隐蔽，可拦截任何内存访问，反外挂需同级权限才能发现
+- **参考**：HyperBone、SimpleSvm、hvpp
+
+### 直接系统调用（Direct Syscalls）
+跳过 ntdll.dll 直接调内核，绕过对 ntdll 调用链的监控。
+
+```c
+// 传统（被监控）：NtReadVirtualMemory(...)
+// 直接系统调用（不被监控）：
+__asm__ __volatile__(
+    "mov rax, 0x3F\n"   // NtReadVirtualMemory 系统调用号
+    "mov rcx, hProcess\n"
+    "mov rdx, addr\n"
+    "mov r8, buf\n"
+    "mov r9, size\n"
+    "syscall\n"
+);
+```
+- **工具**：SysWhispers（自动生成）、HellsGate（运行时解析）、RecycledGate（复用 ntdll 指令）
+
+### 栈伪造（Stack Spoofing）
+反外挂检查调用栈，直接 syscall 的调用栈不正常。伪造合法调用栈，看起来像正常 API 调用。
+- **工具**：SilentMoonwalk、Stack Spoofing PoC
+
+## 反外挂系统分析
+
+反外挂系统分三个层次：
+```
+云端检测：行为分析、机器学习、举报系统
+用户态检测：进程扫描、内存校验、API Hook 检测
+内核态检测：驱动保护、回调监控、完整性校验
+```
+
+### 检测分类
+| 检测类型 | 方法 | 示例 |
+|---|---|---|
+| 签名检测 | 扫描已知外挂特征码 | VAC, ACE |
+| 内存完整性 | 校验游戏内存是否被修改 | BattlEye, EAC |
+| 进程检测 | 扫描可疑进程/模块 | GameGuard, TP |
+| 驱动检测 | 检测未签名/可疑驱动 | Vanguard, ACE |
+| 调试器检测 | 检测调试器存在 | 所有反外挂 |
+| 行为分析 | 分析玩家操作模式 | 云端系统 |
+| Hook 检测 | 检测 API Hook | EAC, BattlEye |
+| 代码完整性 | 校验代码段 CRC/Hash | VAC, ACE |
+
+### 主流反外挂系统
+| 系统 | 使用游戏 | 架构 | 关键检测 |
+|---|---|---|---|
+| **BattlEye** | PUBG, R6, EFT | 内核驱动+用户态服务 | 内核回调拦截、内存扫描、DLL 注入检测、调试器检测、特征码、文件完整性 |
+| **EAC** | Apex, 守望先锋 | 内核驱动+用户态 | 内存完整性、Hook 检测、驱动检测 |
+| **Vanguard** | VALORANT | 内核驱动 | 驱动检测、完整性校验、反调试 |
+| **VAC** | CS, TF2 | 云端+本地 | 签名检测、代码完整性（CRC/Hash） |
+| **ACE/TP** | 英雄联盟, 王者 | 内核驱动+云端 | 进程检测、驱动检测、行为分析 |
+| **nProtect** | 各类网游 | 内核驱动 | 内存扫描、进程检测、键盘钩子 |
+
+### 对抗思路（安全研究）
+1. **内存完整性校验** → Hook 校验函数返回"未修改"，或用 DMA 绕过
+2. **驱动检测** → 使用签名驱动，或 Hypervisor 层隐藏
+3. **Hook 检测** → 用无痕 Hook（如 EPT Hook、硬件断点）
+4. **调试器检测** → Patch/绕过，或 DMA 完全绕开
+5. **代码完整性** → 只改数据不改代码，或运行时动态修改不触发 CRC
+6. **行为分析** → 模拟人类操作节奏，避免机械式操作
