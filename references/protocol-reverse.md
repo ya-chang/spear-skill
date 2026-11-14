@@ -147,3 +147,126 @@ class ProtocolClient:
 - 序列化格式解码正确，字段可读
 - 重放脚本能复现原始请求并得到预期响应
 - Python 客户端能独立完成完整业务流程
+
+## 十、RPC 协议逆向（补充）
+
+### gRPC
+```bash
+# gRPC over HTTP/2
+# 识别：HTTP/2 帧，Content-Type: application/grpc
+# 帧格式：[1B compressed][4B length][NB message]
+
+# 反射
+grpcurl -plaintext localhost:50051 list
+grpcurl -plaintext localhost:50051 describe package.Service
+
+# 无需反射时：抓包分析 protobuf 编码的请求/响应
+```
+
+### JSON-RPC 2.0
+```json
+// 请求
+{"jsonrpc":"2.0","method":"getUser","params":{"id":1},"id":1}
+// 响应
+{"jsonrpc":"2.0","result":{"name":"test"},"id":1}
+// 特征：固定 jsonrpc 字段，method/params/id 结构
+```
+
+### IPC 机制
+```bash
+# Named Pipes (Windows)
+# 特征：\\.\pipe\pipename
+# 工具：Pipe Monitor, Process Monitor
+
+# Unix Domain Sockets (Linux)
+# 特征：/tmp/.X11-unix/X0 等 socket 文件
+strace -e trace=connect -f target_program
+
+# D-Bus (Linux)
+dbus-monitor --session   # 监控会话总线
+dbus-monitor --system    # 监控系统总线
+busctl list              # 列出总线连接
+```
+
+## 十一、蓝牙与 IoT 协议
+
+### BLE 分析
+```bash
+# nRF Connect（手机 App）扫描 BLE 设备
+# Wireshark 导入 BLE 抓包
+# 关键：GATT Service UUID → Characteristic UUID → Read/Write/Notify
+
+# BLE 特征码
+# Service: 0x1800 (Generic Access), 0x1801 (Generic Attribute)
+# 常见：0x180A (Device Information), 0x180F (Battery)
+```
+
+### MQTT
+```bash
+# 订阅所有主题
+mosquitto_sub -h broker.example.com -t '#' -v
+
+# 发布消息
+mosquitto_pub -h broker.example.com -t 'test/topic' -m 'hello'
+
+# 抓包分析：Wireshark MQTT dissector
+# 关键：CONNECT/SUBSCRIBE/PUBLISH 包，topic，payload
+```
+
+### Modbus
+```bash
+# 功能码：01=读线圈，02=读离散输入，03=读保持寄存器，04=读输入寄存器
+# 05=写单个线圈，06=写单个寄存器
+
+# Wireshark 过滤
+modbus && ip.addr == 192.168.1.100
+
+# Python Modbus 客户端
+from pymodbus.client import ModbusTcpClient
+client = ModbusTcpClient('192.168.1.100', port=502)
+result = client.read_holding_registers(0, 10, slave=1)
+print(result.registers)
+```
+
+## 十二、Wireshark 过滤器速查
+
+```bash
+# 基础过滤
+ip.addr == 192.168.1.100
+tcp.port == 8080
+http.request.method == "POST"
+
+# 协议过滤
+http
+tls
+modbus
+mqtt
+dbus
+bluetooth
+
+# 组合过滤
+modbus && ip.addr == 192.168.1.100
+http && tcp.port == 8080
+```
+
+**跟踪 TCP/HTTP 流：** 右键 → Follow → TCP Stream
+**导出 HTTP 对象：** File → Export Objects → HTTP
+**会话统计：** Statistics → Conversations
+**协议分层：** Statistics → Protocol Hierarchy
+
+## 十三、字节序判断
+
+```python
+# 方法：发送已知值，观察字节排列
+# 值 0x12345678
+# 大端：12 34 56 78
+# 小端：78 56 34 12
+# 通常：网络协议用大端，x86 本地程序用小端
+
+import struct
+# 大端序解析
+struct.unpack('>I', data[:4])
+# 小端序
+struct.unpack('<I', data[:4])
+# 常见格式：>I (大端32位), <H (小端16位), >Q (大端64位)
+```
