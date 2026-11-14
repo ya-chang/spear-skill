@@ -36,6 +36,7 @@ description: >
 | Android APK 逆向（jadx/apktool/smali/重打包） | `references/apk-reverse.md` |
 | Android+iOS 移动逆向、SSL Pinning/Root 绕过 | `references/mobile-reverse.md` |
 | 前端 JS 逆向、签名链路、补环境复现 | `references/js-reverse.md` |
+| 协议逆向（抓包/序列化/重放） | `references/protocol-reverse.md` |
 | 恶意代码分析、YARA/Sigma/IOC | `references/malware-analysis.md` |
 | 固件 / IoT 渗透（binwalk/EMBA/仿真） | `references/firmware-pentest.md` |
 | EDR / AV 绕过（unhook/syscall/ETW/AMSI） | `references/edr-bypass.md` |
