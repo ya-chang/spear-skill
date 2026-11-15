@@ -68,11 +68,14 @@ spear/
     apk-reverse.md              # APK 逆向（jadx/apktool/smali/重打包/Frida）
     mobile-reverse.md           # Android+iOS 移动逆向、SSL Pinning/Root 绕过
     js-reverse.md               # 前端 JS 逆向、签名链路、补环境复现
+    browser-automation.md       # 浏览器/桌面自动化（Playwright/OpenReverse）
     protocol-reverse.md         # 协议逆向（抓包/序列化/重放）
     malware-analysis.md         # 恶意代码分析、YARA/Sigma/IOC
     firmware-pentest.md         # 固件/IoT 渗透（binwalk/EMBA/仿真）
     edr-bypass.md               # EDR/AV 绕过（unhook/syscall/ETW/AMSI）
     api-security.md             # API 安全测试（REST/GraphQL/JWT/OAuth）
+    llm-security.md             # LLM/AI 安全测试（Prompt 注入/Agent/OWASP LLM+ASI）
+    supply-chain-security.md    # 供应链安全（SBOM/SCA/CI-CD/依赖溯源）
     game-cheat.md               # 游戏外挂/内存读写/注入/引擎逆向/高级利用
     attack-chain.md             # 多阶段攻击链编排（从 A 打到 B）
     pentest-playbook.md         # 渗透打点（recon→利用→后渗透，含 Web 漏洞类型）
