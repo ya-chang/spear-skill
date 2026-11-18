@@ -500,8 +500,69 @@ npm run doctor:network
 
 ## 十三、验证
 
-- 浏览器自动化能完成登录、表单提交、XSS 注入、截图取证等操作
-- Playwright 脚本能拦截/修改请求与响应，选择器与等待策略正确
-- OpenReverse UIA/CUA 模式能操作目标桌面应用，网络观察能捕获流量
-- 逆向工具（IDA/x64dbg）自动化组合能完成批量分析与断点调试
+- [ ] 浏览器自动化能完成登录、表单提交、XSS 注入、截图取证等操作（Playwright 脚本执行后各操作成功）
+- [ ] Playwright 脚本能拦截/修改请求与响应（`page.route` 拦截命中，修改后响应生效）
+- [ ] 选择器与等待策略正确（元素定位无超时，等待条件满足后操作执行）
+- [ ] OpenReverse UIA/CUA 模式能操作目标桌面应用（UIA 元素树可读，CUA 能执行点击/输入）
+- [ ] 网络观察能捕获流量（Playwright 网络监听捕获请求/响应，与实际一致）
+- [ ] 逆向工具自动化组合能完成批量分析与断点调试（IDA/x64dbg 脚本执行无报错）
+
+## 十三·五、代码骨架：Playwright 请求拦截与重放
+
+> 可运行的 Playwright 骨架，拦截请求、修改参数、重放验证。关键 URL/选择器按样本替换。
+
+```javascript
+// playwright_intercept.js — Playwright 请求拦截骨架（Node.js）
+// 拦截目标请求，修改参数后放行，验证响应
+
+const { chromium } = require('playwright');
+
+(async () => {
+    const browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
+
+    // 1. 拦截请求，修改参数
+    await page.route('**/*', async (route) => {
+        const request = route.request();
+        const url = request.url();
+
+        // 命中目标 API 时修改请求体
+        if (url.includes('[TARGET_API_PATH]')) {
+            const postData = request.postData();
+            if (postData) {
+                // 修改参数（如替换 sign、uid 等）
+                const modified = postData.replace('[OLD_VAL]', '[NEW_VAL]');
+                await route.continue({ postData: modified });
+                console.log('[intercept] modified request:', url);
+                return;
+            }
+        }
+        await route.continue();
+    });
+
+    // 2. 监听响应
+    page.on('response', async (response) => {
+        const url = response.url();
+        if (url.includes('[TARGET_API_PATH]')) {
+            const body = await response.text();
+            console.log('[response]', url, response.status(), body.slice(0, 200));
+        }
+    });
+
+    // 3. 打开目标页面并触发请求
+    await page.goto('[TARGET_PAGE_URL]');
+    // 触发目标操作（点击按钮/提交表单）
+    await page.click('[TARGET_SELECTOR]');
+
+    // 4. 截图取证
+    await page.screenshot({ path: 'evidence.png' });
+
+    await browser.close();
+    console.log('[done] interception complete');
+})();
+```
+
+运行：`npm i playwright && npx playwright install chromium && node playwright_intercept.js`。验证：拦截日志打印修改后的请求，响应被捕获，截图生成。
+
+> 更新：2026-11-17 · 来源：骨架为通用模板，配合 §Playwright 核心操作使用
 - 所有操作后正确关闭浏览器/应用，无进程泄漏

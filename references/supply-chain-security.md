@@ -350,10 +350,58 @@ schedule:
 
 ## 十三、验证
 
-- SBOM 完整覆盖直接依赖与传递依赖，无未知组件
-- SCA 告警经可达性验证后按优先级排序，无"告警即修复"的误判
-- CI/CD 管道无硬编码密钥、Action 锁定 SHA、Runner 隔离
-- 容器镜像扫描无 HIGH/CRITICAL 未修复项，基础镜像最小化
+- [ ] SBOM 完整覆盖直接依赖与传递依赖，无未知组件（`syft` 生成的 SBOM 与 `npm ls`/`pip list` 对照无遗漏）
+- [ ] SCA 告警经可达性验证后按优先级排序，无"告警即修复"的误判（每条告警标注是否可达、影响范围）
+- [ ] CI/CD 管道无硬编码密钥（扫描无明文密钥，用环境变量/Secret 管理）、Action 锁定 SHA、Runner 隔离
+- [ ] 容器镜像扫描无 HIGH/CRITICAL 未修复项（`trivy`/`grype` 扫描结果无未处理的高危项）
+- [ ] 基础镜像最小化（无多余包、无调试工具，镜像层数与体积在合理范围）
+- [ ] 依赖溯源可追溯（每个依赖有来源、版本、许可证，无来源不明的包）
+
+## 十三·五、代码骨架：SBOM 生成与 SCA 扫描脚本
+
+> 可运行的脚本骨架，生成 SBOM 并执行 SCA 扫描，输出漏洞报告。关键路径按样本替换。
+
+```bash
+#!/bin/bash
+# sbom_sca_scan.sh — SBOM 生成与 SCA 扫描骨架
+# 生成 SBOM，执行 SCA 扫描，输出漏洞报告
+
+TARGET="[TARGET_DIR]"
+OUTPUT_DIR="./supply-chain-report"
+mkdir -p "$OUTPUT_DIR"
+
+echo "[1] 生成 SBOM（syft）..."
+# 生成 CycloneDX 格式 SBOM
+syft "$TARGET" -o cyclonedx-json > "$OUTPUT_DIR/sbom.cdx.json"
+syft "$TARGET" -o spdx-json > "$OUTPUT_DIR/sbom.spdx.json"
+echo "[1] SBOM 已生成：$OUTPUT_DIR/sbom.cdx.json"
+
+echo "[2] SCA 扫描（trivy）..."
+# 对目录/SBOM 执行 SCA 扫描
+trivy fs --format json --output "$OUTPUT_DIR/trivy_fs.json" "$TARGET"
+# 对生成的 SBOM 执行扫描
+trivy sbom --format json --output "$OUTPUT_DIR/trivy_sbom.json" "$OUTPUT_DIR/sbom.cdx.json"
+echo "[2] SCA 扫描完成"
+
+echo "[3] 汇总高危漏洞..."
+# 提取 HIGH/CRITICAL 漏洞
+jq '.Results[].Vulnerabilities[] | select(.Severity == "HIGH" or .Severity == "CRITICAL") | {PkgName, VulnerabilityID, Severity, FixedVersion}' \
+    "$OUTPUT_DIR/trivy_fs.json" > "$OUTPUT_DIR/high_critical.json"
+
+echo "[3] 高危漏洞清单：$OUTPUT_DIR/high_critical.json"
+cat "$OUTPUT_DIR/high_critical.json"
+
+echo "[4] 密钥扫描（trufflehog）..."
+# 扫描硬编码密钥
+trufflehog filesystem "$TARGET" --json --no-update > "$OUTPUT_DIR/secrets.json" 2>/dev/null || true
+echo "[4] 密钥扫描完成：$OUTPUT_DIR/secrets.json"
+
+echo "[done] 供应链安全报告已生成于 $OUTPUT_DIR"
+```
+
+运行：`chmod +x sbom_sca_scan.sh && ./sbom_sca_scan.sh`。验证：SBOM 文件生成，SCA 扫描输出漏洞清单，高危漏洞与密钥扫描结果可读。
+
+> 更新：2026-11-17 · 来源：骨架为通用模板，配合 §七 SCA 软件组成分析使用
 - 供应链攻击应急与回滚策略已文档化并验证
 
 来源：OWASP CycloneDX、SPDX、Google OSV、CISA SBOM Guidance、SLSA Framework、OWASP CI/CD Top 10

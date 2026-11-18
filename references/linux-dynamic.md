@@ -1117,3 +1117,63 @@ struct obj_X {
     /* 0x10 */ void*    handler;
 };  // sizeof = 0x18
 ```
+
+## 二十四、验证清单
+
+- [ ] GDB 能正常附加、设断点、单步（`gdb -p <pid>` 后 `b *addr`、`si` 无异常）
+- [ ] strace/ltrace 输出完整（系统调用/库函数调用序列无缺失，时间线正确）
+- [ ] Frida 能正常 hook 目标函数（hook 回调触发，参数与返回值可观测）
+- [ ] 结构体/vtable 恢复准确（字段偏移与运行时内存一致，vtable 方法解析正确）
+- [ ] LD_PRELOAD 注入生效（hook 函数被调用，修改后行为符合预期）
+- [ ] 多线程调试无竞态误判（线程切换点正确，Helgrind 无假阳性）
+- [ ] core dump 分析完整（崩溃栈可读，寄存器与内存快照有效）
+- [ ] ASLR 地址计算正确（基址泄露后偏移计算与实际匹配，PIE 换算无误）
+
+## 二十四·五、代码骨架：GDB 自动化断点与内存读取脚本
+
+> 可运行的 GDB 命令脚本骨架，自动附加、设断点、读取内存、导出快照。关键地址按样本替换。
+
+```gdb
+# gdb_auto.gdb — GDB 自动化分析骨架
+# 用法：gdb -x gdb_auto.gdb --args ./target
+
+# 1. 启用日志，记录所有操作
+set logging file gdb_session.log
+set logging on
+
+# 2. 反汇编入口，定位关键函数
+disassemble main
+info functions
+
+# 3. 在关键函数设断点（地址按样本替换）
+break *[FUNC_ADDR]
+break *[CHECK_FN_ADDR]
+
+# 4. 运行到断点
+run
+
+# 5. 断下后读取寄存器与内存
+info registers
+x/16gx $rsp
+x/32wx [BUFFER_ADDR]
+
+# 6. 单步跟踪，记录调用栈
+stepi
+bt
+
+# 7. 修改内存（测试用）
+set {int}[BUFFER_ADDR] = 0x41414141
+
+# 8. 继续运行，观察行为
+continue
+
+# 9. 导出内存快照
+dump binary memory dump.bin [START_ADDR] [END_ADDR]
+
+# 10. 退出
+quit
+```
+
+运行：`gdb -x gdb_auto.gdb --args ./target`。验证：`gdb_session.log` 记录完整操作，`dump.bin` 内存快照可读，断点命中后寄存器/内存数据正确。
+
+> 更新：2026-11-17 · 来源：骨架为通用模板，配合 §三 GDB 核心命令使用

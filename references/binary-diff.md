@@ -93,6 +93,91 @@ found_struct_offset → set_comment(insn_va, "{struct_name}.{member_name}")
 
 ## 八、验证
 
-- 迁移后的符号名在新版中位置正确
-- 抽查关键函数，反汇编/伪代码与旧版逻辑对应
-- 批量重命名无错位
+- [ ] 迁移后的符号名在新版中位置正确（重命名后的函数在新版对应偏移处，反汇编验证地址匹配）
+- [ ] 抽查关键函数，反汇编/伪代码与旧版逻辑对应（抽 5-10 个关键函数，新版伪代码与旧版逻辑语义一致）
+- [ ] 批量重命名无错位（重命名清单中每个符号在新版的偏移正确，无错位/遗漏）
+- [ ] 差分结果可追溯（diff 输出标注每个变化点的位置、旧值、新值，可回溯）
+- [ ] 符号迁移覆盖率达标（关键符号迁移率 ≥ 90%，未迁移的标注原因）
+
+## 八·五、代码骨架：二进制差分脚本
+
+> 可运行的 Python 骨架，对两个版本二进制做差分，输出变化点。关键路径按样本替换。
+
+```python
+# binary_diff.py — 二进制差分骨架（Python）
+# 对两个版本二进制做字节级差分，输出变化点位置与内容
+
+import sys
+import hashlib
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+def diff_binaries(old_path, new_path, block_size=16):
+    """对两个二进制做块级差分，输出变化点"""
+    with open(old_path, "rb") as old, open(new_path, "rb") as new:
+        old_data = old.read()
+        new_data = new.read()
+
+    min_len = min(len(old_data), len(new_data))
+    changes = []
+
+    # 块级比对
+    for i in range(0, min_len, block_size):
+        old_chunk = old_data[i:i+block_size]
+        new_chunk = new_data[i:i+block_size]
+        if old_chunk != new_chunk:
+            changes.append({
+                "offset": i,
+                "old": old_chunk.hex(),
+                "new": new_chunk.hex(),
+            })
+
+    # 长度差异
+    length_diff = len(new_data) - len(old_data)
+    if length_diff != 0:
+        changes.append({"offset": min_len, "note": f"length diff: {length_diff}"})
+
+    return changes
+
+def main():
+    old_bin = "[OLD_VERSION]"
+    new_bin = "[NEW_VERSION]"
+
+    print(f"[info] old: {sha256_file(old_bin)[:16]}...")
+    print(f"[info] new: {sha256_file(new_bin)[:16]}...")
+
+    changes = diff_binaries(old_bin, new_bin)
+
+    print(f"\n=== 差分结果 ===")
+    print(f"变化点数量: {len(changes)}")
+
+    # 输出前 20 个变化点
+    for c in changes[:20]:
+        print(f"  offset=0x{c['offset']:x}")
+        if "old" in c:
+            print(f"    old: {c['old']}")
+            print(f"    new: {c['new']}")
+        else:
+            print(f"    {c['note']}")
+
+    if len(changes) > 20:
+        print(f"  ... 共 {len(changes)} 个变化点，详见完整输出")
+
+    # 保存完整结果
+    with open("diff_result.txt", "w") as f:
+        for c in changes:
+            f.write(f"0x{c['offset']:x}: {c.get('old','')} -> {c.get('new',c.get('note',''))}\n")
+    print(f"\n完整结果已保存: diff_result.txt")
+
+if __name__ == "__main__":
+    main()
+```
+
+运行：`python3 binary_diff.py`。验证：差分输出变化点位置与内容，`diff_result.txt` 可追溯，符号迁移后偏移验证正确。
+
+> 更新：2026-11-17 · 来源：骨架为通用模板，配合 §三 二进制差分工作流使用

@@ -42,6 +42,8 @@ def write_mem(pid, addr, data):
 
 ## 二、Hook 技术
 
+> 全架构 Hook 原语详见 `common-techniques.md §1`。本节侧重外挂场景下的 Hook 选型与落地。
+
 ### 1. Frida Hook（跨平台首选）
 ```javascript
 // Hook 函数，改参数/返回值
@@ -114,9 +116,81 @@ _, _, _, max_loc = cv2.minMaxLoc(res)
 
 ## 七、验证
 
-- 读写/Hook 生效，游戏内表现符合预期
-- 协议收发正确，封包格式对齐
-- 自动化脚本稳定运行，不误触
+- [ ] 读写/Hook 生效，游戏内表现符合预期（CE/Frida 修改后游戏内数值/行为变化符合预期）
+- [ ] 协议收发正确，封包格式对齐（重放/修改的封包被服务端接受，格式字段正确）
+- [ ] 自动化脚本稳定运行，不误触（脚本连续运行无崩溃、无误触发反作弊）
+- [ ] Hook 回调命中目标函数（Frida hook 打印参数/返回值，确认命中）
+- [ ] 内存地址定位准确（扫描得到的地址在多次运行/重启后仍有效，或偏移计算正确）
+
+## 七·五、代码骨架：Frida 游戏内存读写
+
+> 可运行的 Frida 骨架，读写游戏进程内存、Hook 目标函数。关键地址/类名按样本替换。
+
+```javascript
+// game_mem_rw.js — Frida 游戏内存读写骨架（Android/PC）
+// 原理：Process.findModuleByName 定位模块，Memory.read/write 读写内存
+
+// 1. 内存读取
+function readMemory(moduleName, offset, type) {
+    var mod = Process.findModuleByName(moduleName);
+    if (!mod) {
+        console.log("[error] module not found: " + moduleName);
+        return null;
+    }
+    var addr = mod.base.add(offset);
+    switch (type) {
+        case "int32":
+            return Memory.readInt32(addr);
+        case "int64":
+            return Memory.readInt64(addr);
+        case "float":
+            return Memory.readFloat(addr);
+        case "string":
+            return Memory.readUtf8String(addr, 100);
+        default:
+            return Memory.readByteArray(addr, 16);
+    }
+}
+
+// 2. 内存写入
+function writeMemory(moduleName, offset, value) {
+    var mod = Process.findModuleByName(moduleName);
+    if (!mod) return false;
+    var addr = mod.base.add(offset);
+    Memory.protect(addr, 4, 'rw-');
+    Memory.writeInt32(addr, value);
+    console.log("[write] " + moduleName + "+0x" + offset.toString(16) + " = " + value);
+    return true;
+}
+
+// 3. Hook 目标函数
+function hookTarget() {
+    var TargetClass = Java.use("[GAME_CLASS]");
+    var targetMethod = TargetClass.targetMethod.overload();
+    targetMethod.implementation = function () {
+        var result = this.targetMethod();
+        console.log("[hook] result = " + result);
+        return result;
+    };
+}
+
+// 执行
+setInterval(function () {
+    // 定期读取游戏内存（如金币、血量）
+    var gold = readMemory("[GAME_MODULE]", [GOLD_OFFSET], "int32");
+    if (gold !== null) {
+        console.log("[read] gold = " + gold);
+        // 写入修改（测试用）
+        // writeMemory("[GAME_MODULE]", [GOLD_OFFSET], 99999);
+    }
+}, 1000);
+
+Java.perform(hookTarget);
+```
+
+运行：`frida -U -f com.game.app -l game_mem_rw.js`。验证：内存读取打印数值，Hook 回调触发，修改后游戏内数值变化。
+
+> 更新：2026-11-17 · 来源：骨架为通用模板，配合 §一 内存读写使用
 
 ## 高级外挂技术（2025-2026）
 
@@ -135,6 +209,8 @@ pcileech_memread(game_base + 0x1A3B5C, &health, sizeof(health));
 ```
 
 ### 虚拟化层攻击（Hypervisor / EPT Hook）
+
+> 通用原语详见 `common-techniques.md §2`（NPT/EPT/SLAT 虚拟化 Hook）。本节侧重外挂场景的对抗应用。
 利用 CPU VT-x 虚拟化技术，在 Ring -1 层（比内核更高权限）拦截游戏。
 
 ```
@@ -1013,3 +1089,139 @@ Windows 事件追踪，反外挂用它监控 API 调用。
   - 偏移更新
   - 用户反馈处理
 ```
+
+---
+
+## 引擎资源容器逆向（UE4/UE5、Unity、自研引擎）
+
+### 一、核心方法：源码优先，然后"找不同"
+
+**0 知识储备逆 UE4 的 INI/pak 加密**——这个标题本身就是方法论。
+
+```
+不走"猜逻辑"的 O(n) 路线，
+走"用引擎源码把加载链搭出来 → 对着反编译结果找不同"的 O(1) 路线。
+```
+
+**搭加载链的步骤**：
+
+1. 拿到引擎公开源码（UE4/UE5 在 GitHub，需 Epic 账号；Unity 有官方文档与部分源码）。
+2. 从 `main` / `AppInit` 开始，顺着**资源加载相关的类名**往下搜：
+   ```
+   FEngineLoop::AppInit
+     → InitializeConfigSystem
+       → LoadGlobalIniFile
+         → LoadConfigFileWrapper
+           → ProcessInputFileContents   ← 加密/解密就发生在这一层之间
+   ```
+3. 在源码里找到"文件读取 → 解密 → 解析"这三步的**边界函数名**。
+4. 到反编译结果里搜这些**函数名对应的字符串/导入**，定位到二进制中的地址。
+5. 逐参数对照：源码里读了哪些字段，二进制里是不是也读了那几个。
+
+> 关键心法：**你不需要理解算法，你需要知道"引擎在这个位置期望看到什么"。**
+> 只要能让引擎满意，你就赢了——解密算法的细节是第二优先级。
+
+### 二、识别自定义容器
+
+真实案例（UE4 INI 加密）的容器头：
+
+```
+1B  magic        (0x1B)
+1B  xx
+1B  0x55
+1B  keySrc       (67..70 → 选哪一组密钥)
+4B  origSize     (原始明文长度，小端)
+... ciphertext
+```
+
+**通用推演法**：
+
+1. 找"小的固定值"结尾（`0x55` 这种魔术字节）→ 是标志位。
+2. 找"值随文件变化但范围很小"的字节（67..70）→ 是索引/选择器。
+3. 找"值 ≈ 明文长度"的 4 字节 → 是原始大小。
+4. 剩余部分是密文；密文长度必须是**块大小的整数倍**（否则是流加密或带 padding）。
+
+**判断加密类型**：
+
+- 密文长度 = 明文长度（且是 16 的倍数）→ 分组加密无 padding 或 padding 已计入
+- 密文长度 = 明文长度 + 16 → 有 padding 块
+- 完全相等且非块整数倍 → 流加密（RC4/异或）
+
+### 三、算法识别：靠指纹，不靠猜
+
+**不要猜算法名字。** 用常量指纹去匹配公开实现：
+
+| 算法 | 指纹 |
+|---|---|
+| **AES** | 16×256 S-Box 以 `63 7C 77 7B F2 6B 6F C5` 开头；Rcon `01 02 04 08 10 20 40 80 1B 36` |
+| **SM4** | S-Box 以 `D6 90 E9 FE CC E1 3D B7` 开头 |
+| **DES** | 8 个 S-Box（每 64 项），初始置换表 IP |
+| **Blowfish** | P-array 用 π 小数初始化（`24 3F 6A 88 85 A3 08 D3`） |
+| **RC4** | 256 字节 S 盒 + KSA 循环（`for i in 0..255`） |
+| **MD5** | 4 个 IV `01 23 45 67 89 AB CD EF FE DC BA 98 76 54 32 10` |
+| **SHA-1** | 5 个 IV `67 45 23 01 EF CD AB 89 98 BA DC FE 10 32 54 76 C3 D2 E1 F0` |
+| **SHA-256** | 8 个 IV `6A 09 E6 67 BB 67 AE 85 3C 6E F3 72 A5 4F F5 3A` |
+
+**对拍验证**：用公开实现的向量（NIST 测试向量）跑一遍，一致才算认对了。
+
+**密钥从表里挑（真实案例）**：SM4 的 16 字节密钥不是连续取的，而是按一个置换索引从大表里挑：
+
+```
+{1, 35, 5, 39, 9, 43, 13, 47, 62, 28, 58, 24, 54, 20, 50, 16}
+```
+
+**识别方法**：看到"16 次下标访问同一个大数组"的循环，且下标不是 0..15 连续 → 就是置换选键。把索引表 dump 出来即可。
+
+### 四、分层结构与 round-trip
+
+资源系统常见三层：
+
+```
+外层容器（pak/bundle/zip 变体）  → 里面是 N 个文件条目
+  条目内层（ini/asset/自定义）   → 可能再加密/压缩
+    内容本身的格式（INI/二进制序列化）
+```
+
+**处理顺序一定是从外到内**，每解开一层就做一次**结构性验证**（文件数、名字表、长度表是否自洽）。
+
+**round-trip 是唯一可信的验证**：
+
+```
+解出来的内容 → 用同样的算法重新加密 → 与原文件逐字节相同?
+```
+
+一致 → 算法与参数（key/IV/padding/字节序）全部正确。不一致但明文可读 → 通常是 padding 或 IV 差一点，逐项对比能定位。
+
+### 五、有现成工具就用现成工具
+
+| 场景 | 工具方向 |
+|---|---|
+| UE4/UE5 pak | FModel / UnrealPak / repak / UEViewer |
+| Unity | AssetStudio / AssetRipper / Il2CppDumper |
+| 通用容器 | 先 `file`、`binwalk`、再看 magic |
+| 已知算法 | Python `cryptography` / `pycryptodome`，**不要手写 AES** |
+
+**但**：工具只能解开"它认识的加密"。遇到自定义变体时，工具的价值是**告诉你标准格式长什么样**，然后你 diff 出差异。
+
+### 六、INI 这类"看似简单"的格式
+
+真实案例的加密 INI 结构：
+
+```
+1B 0x1B | 1B xx | 1B 0x55 | 1B keySrc(67..70) | 4B origSize | SM4-ECB 密文
+```
+
+坑：
+- **ECB 模式**：块之间独立，改一个块不影响其他块 → 可以用来做"已知明文攻击"（把已知内容加密成块，替换进去）。
+- **keySrc 是 67..70**：这是个 ASCII 范围（`C`..`F`），说明密钥表按字符索引。
+- **origSize 必须精确**：解密后要截断到这个长度，否则尾部垃圾会让 INI 解析器报错。
+
+### 验证
+
+- [ ] 引擎加载链已用源码搭出（边界函数名定位到二进制地址），未从零猜算法
+- [ ] 容器头字段（magic/索引/origSize）推演有据，加密类型（分组/流/带 padding）判断正确
+- [ ] 算法用常量指纹确认并对拍 NIST 向量，未猜算法名
+- [ ] round-trip：重加密后与原文件逐字节一致；修改明文值→重加密→程序内生效
+- [ ] 资源能被**引擎/原程序**加载（不是"我能读出来"），边界用例（空/超长/UTF-8 中文/含 `=` 换行）通过
+
+> 更新：2026-11-18 · 来源：看雪帖 2138362（52pojie.cn 逆向技能包）

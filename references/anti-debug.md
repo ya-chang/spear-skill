@@ -106,9 +106,62 @@ checks.forEach(name => {
 
 ## 四、验证
 
-- GDB 能正常附着、设断点、单步
-- 程序不退出、不弹"调试检测"提示
-- Frida 能正常 hook 目标函数
+- [ ] GDB 能正常附着、设断点、单步（`gdb -p <pid>` 后 `b *addr`、`si` 无异常退出）
+- [ ] 程序不退出、不弹"调试检测"提示（运行目标功能，无闪退/弹窗/自杀）
+- [ ] Frida 能正常 hook 目标函数（`frida -p <pid> -l hook.js` 后 hook 回调触发）
+- [ ] 绕过后反调试检测函数返回预期值（如 TracerPid hook 后返回 0）
+- [ ] 内存完整性校验不报篡改（CRC/Hash 校验通过）
+
+## 四·五、代码骨架：Frida 绕过 TracerPid 反调试
+
+> 可运行的 Frida 骨架，hook `/proc/self/status` 读取使 TracerPid 返回 0，绕过基于 TracerPid 的反调试。
+
+```javascript
+// anti_debug_tracerpid.js — Frida 绕过 TracerPid 反调试骨架
+// 原理：目标读 /proc/self/status 的 TracerPid 字段判断是否被调试
+// Hook open/read 拦截对 status 文件的访问，返回伪造内容
+
+Java.perform(function () {
+    // Hook libc open，拦截 "/proc/self/status"
+    var libc = Module.findBaseAddress("libc.so");
+    var open = Module.findExportByName(libc, "open");
+    if (open) {
+        Interceptor.replace(open, new NativeFunction(open, 'int', ['pointer', 'int', 'pointer']) {
+            // 简化骨架：实际需判断路径参数是否为 /proc/self/status
+            // 命中则返回伪造 fd 或在 read 阶段替换内容
+            return this.apply(null, arguments);
+        });
+    }
+
+    // 更直接：Hook read，当读取 status fd 时替换 TracerPid
+    var read = Module.findExportByName(libc, "read");
+    if (read) {
+        Interceptor.attach(read, {
+            onEnter: function (args) {
+                // args[0]=fd, args[1]=buf, args[2]=count
+                // 判断 fd 是否指向 /proc/self/status（通过 /proc/self/fd 映射）
+                // 命中则在 onLeave 中替换 TracerPid 字段为 0
+                this.fd = args[0].toInt32();
+                this.buf = args[1];
+                this.count = args[2].toInt32();
+            },
+            onLeave: function (retval) {
+                // 读取缓冲区内容，搜索 "TracerPid:" 行，将数值改为 0
+                var content = Memory.readUtf8String(this.buf, this.count);
+                if (content && content.indexOf("TracerPid:") !== -1) {
+                    var patched = content.replace(/TracerPid:\s*\d+/, "TracerPid:0");
+                    Memory.writeUtf8String(this.buf, patched);
+                    console.log("[anti-debug] TracerPid patched to 0");
+                }
+            }
+        });
+    }
+});
+```
+
+运行：`frida -U -f com.target.app -l anti_debug_tracerpid.js`。验证：目标反调试检测函数不再触发，程序正常运行。
+
+> 更新：2026-11-17 · 来源：骨架为通用模板，配合 §二反调试绕过方法论使用
 
 ## 附：PEB 偏移表与 NtQueryInformationProcess
 
@@ -290,3 +343,96 @@ Plugins → ScyllaHide → Options
 勾选：GetTickCount / QueryPerformanceCounter
 Apply → 重启调试会话
 ```
+
+## 九、VMProtect handler 层反调试实战
+
+适用：VMProtect（Ultra：Mutation + Virtualization）加壳的 32 位 Windows 样本，WOW64 环境。分析层级：handler 层。
+
+**VM 两层结构**：① 伪指令层——一条 x86 指令译成一组伪指令（`add eax,03` → `cmPush imm`+`cmPush reg`+`cmAdd`+`cmPop`×2，命名取自 `core/intel.h` 的 `IntelCommandType` 枚举：cmPush/cmPop/cmMov/cmAdd/cmXor/cmTest/cmNor/cmNand/cmCall/cmJmp…）；② handler 层——每条伪指令编译成一组原生汇编（handler）。逆向路径：原生汇编 → 伪指令 → 伪指令组 → 原生指令，可在 handler 层或伪指令层突破。
+
+**5 个角色寄存器（分析 handler 先定寄存器）**：
+
+| 寄存器 | 32 位下 | 作用 |
+|---|---|---|
+| 字节码寄存器 pcode_registr | 不固定，每 handler 确认 | 指向**加密**字节码（存下一 handler 相对偏移 + 常数，解密密钥由上一 handler 传下，**不能单独 patch 字节码单元**） |
+| 操作数栈寄存器 stack_registr | 不固定 | 指向操作数栈顶，cmEnter 用 `mov xxx,esp` 初始化，压栈可向高/低扩展 |
+| 派发寄存器 jmp_registr | 不固定 | handler 用 `jmp xxxreg` 或 `push xxxreg+ret` 派发；**找到这两种结构即定 jmp_registr 也定 handler 结尾** |
+| 密钥寄存器 crypt_registr | **固定 ebx** | 解密字节码 |
+| VM 寄存器基址 regfile_base_reg | **固定 esp** | VM 寄存器 = esp+0xXX 物理槽位（cmEnter 用 `lea esp,[esp-0C0h]` 预留） |
+
+**cmEnter/cmRet**：cmEnter 三件事——初始化角色寄存器、压栈保存 8 原生寄存器现场（ebx/edi/eax/edx/ecx/eflags/ebp/esi，次序不固定）、进入 handler 序列；cmRet 逆操作。每个 cmEnter 内部有 `lea XXXreg, loc_X` 载入"起始地址"（非 handler 开始地址），下一 handler 地址 = 起始地址 + 解密偏移。
+
+**条件跳转定位定式**：handler 流找**相邻两个 cmAdd**（位屏蔽选择公式）→ 往前追溯**右移 6 位**归约指令（标志位搬 bit0）→ 追溯被移位操作数来源即比较源。cmNor 两次取反模拟 `test al,al` 的 eflags。
+
+**五类检测与 patch 落点**：
+
+**① PEB.BeingDebugged**：`cmPush [fs:[0x30]]` 读 PEB → cmAdd 算 +2 → `cmPush [mem]` 读标志。**绕过**：PEB 基址+2 下**硬件读写断点**，断下后 cx 清 0。
+
+**② WOW64 远门调 NtQueryInformationProcess**：32 位进程经远门（`jmp far`）调 API。要点：
+
+- 入口校验：调前先 cmEnter/cmRet 校验远门入口前 2 字节（`0E 68`，即 `push cs; push offset`），**INT3 断点把首字节改成 0xCC 会致校验失败**——避开或对齐后再下断。
+- 入参走操作数栈：`0x03008019`(ssn，0x19=NtQueryInformationProcess)、`0xFFFFFFFF`(ProcessHandle)、`7`(ProcessDebugPort) / `0x1E`(DebugObjectHandle)、ProcessInformation 指针、长度 4、ReturnLength。
+- 远门出口 `mov cx,ss; mov ss,cx`（字节 `66 8C D1 66 8E D1`）利用 Intel 特性**吃掉单步异常 #DB**反硬件断点——**搜索 `66 8E D1` 找所有远门出口**，硬件断点延后到下一条 `push`。
+- 软件断点校验：读下一 handler 首 2 字节，与断点字节（0xCC/0x03CD/0x0B0F，即常数 0x34/0xFC33/0xF4F1 取负）做减法提 ZF，有断点算非法地址跑飞。
+- **定位远门**：二进制搜索 `0e 68 ?? ?? ?? ?? ea`（本样本 21 个），第二个 push 的值即出口；出口 `push` 处下断，**ESI=返回值地址，ESI-8=ProcessInformation**。
+- **Patch**：ProcessDebugPort(7)——将 ESI-8 处 `FF FF FF FF` 改 `00 00 00 00`（返回值不用改，查询必成功）；DebugObjectHandle(0x1E)——**只改返回值**为 `0xC0000353`，**不动 ProcessInformation**（改 0 会被判为函数被跳过）。
+
+**③ NtSetInformationThread（Class=0x11 隐藏 debugger）**：绕过——入口远跳指令（`push cs; push offset; jmp far`）设断 → ESP+8 调平 → EIP 设到出口跳转指令，跳过远门。
+
+**④ BADC0DE（CloseHandle 非法句柄）**：`CloseHandle(0xDEADC0DE)`，调试环境下抛 0xC0000008，异常处理执行即判定。绕过：`cmCall` 内 `call eax` 处设断 → ESP+4 调平 → EIP 跳过 call → eax 置 0。
+
+**⑤ TFCheck（单步异常）**：handler 用 `cmNor(eflags,0x100)` 再 cmNand 自反 = **eflags|0x100（设 TF）**，cmRet 执行 `popf`（eflags=0x346）→ 下条 `rdtsc` 触发单步。两种判定：调试器吃掉异常→执行到 `nop`→判定；异常派发回样本→SEH filter 检查 `ContextRecord.Dr0-Dr3`（**在 VM 内执行**，数百条 handler）。**绕过**：清硬件断点 + 单步异常交还样本；或在 except_handler3 的 filter 返回处（`0x0042320B`）设断，或入口断下后把 pContextRecord 的 Dr0-Dr3 清 0。
+
+**验证**：硬件断点断 PEB+2、远门入口校验、TFCheck 双分支（吃异常/派发异常）分别实测；patch 后程序继续运行不再报 debugger。仅针对开源样本/授权目标。
+
+## 十、快速参考（VMProtect）
+
+- 角色寄存器：32 位下 crypt=ebx、regfile_base=esp 固定，其余每 handler 确认
+- 远门入口字节 `0e 68`；远门出口字节 `66 8E D1`
+- 条件跳转：两 cmAdd + Shr 6 + 追溯来源
+- 断点字节组：0xCC / 0x03CD / 0x0B0F（对应常数 0x34 / 0xFC33 / 0xF4F1）
+- TF 设置等价式：`NAND(NOR(eflags,0x100), NOR(eflags,0x100)) = eflags|0x100`
+
+---
+
+## 十、VMP handler 层反调试：按层整体拆除（实战）
+
+> 前置：VMP 的检查分布在 handler 里，**每个 handler 只查一项**。逐点 nop 不现实，要找到"所有检查的汇聚点"。反调试是 O(1) 单点防御（一个开关），虚拟化是 O(n)——**先拆反调试，再谈虚拟化**，顺序反了会在"程序行为诡异"上浪费几天。
+
+### 1. 常见检查项与识别
+
+| 检查 | 实现 | 特征字节/行为 |
+|---|---|---|
+| **PEB.BeingDebugged** | `mov eax, fs:[0x30]` → `movzx eax, byte [eax+2]` | `64 A1 30 00 00 00` / `64 8B 05 30...`，随后读 `+2` |
+| **NtQueryInformationProcess 7**（DebugPort） | `push 7` + `call NtQueryInformationProcess` | 立即数 `7` 出现在 syscall 前 |
+| **NtQueryInformationProcess 0x1E**（DebugObjectHandle） | `push 0x1E` | 同上（Win8+ 语义） |
+| **NtSetInformationThread 0x11**（HideFromDebugger） | `push 0x11` | 会让调试器"断不下来" |
+| **BADC0DE** | 读 `fs:[0x30]+0xBC`（或 `TEB+0xFCA`）比较 `0x0BAD`/`0xC0DE` | 特征常量 |
+| **TFCheck / SingleStep** | 设 `EFLAGS.TF` 后检查是否触发异常 | 会导致单步即崩 |
+| **WOW64 远门** | 32 位进程在 64 位系统上远跳转进入 64 位代码，异常码 `0x4000001F` | 只出现在 WOW64 |
+
+注意：`NtQueryInformationProcess` 的 class 号在不同 Windows 版本语义不同。判断时以"类号 + 后续比较逻辑"为准，不要只看类号。
+
+### 2. 拆除策略（按优先级）
+
+1. **找汇聚点**：所有检查最终都产生一个"是否调试"的 bool，走同一个分支。找到那个 bool 的存放位置（栈变量或寄存器），把它改成常量。
+2. **改返回值**：hook `NtQueryInformationProcess` 返回 `STATUS_PORT_NOT_SET`，PEB 手动清 `BeingDebugged`。
+3. **跳到出口**：在 handler 层面找到"检测失败 → 走异常路径"的跳转，直接跳到 handler 的正常出口（栈平衡由 handler 自己保证，比手工 nop 安全）。
+4. **让检查失效而不是让它通过**：某些检查失败会导致"静默改行为"（不崩，但功能不对），这时必须让它**通过**而不是"跳过"。
+
+> 关键判断：**这是"检测"，还是"检测 + 后果"？** 只 nop 检测、不清后果，程序会带着错误状态继续跑——这是最常见的"改了没崩但不对"。
+
+### 3. 滚动解密（BL 反调试）
+
+VMP 会用 `BL`（ARM）或 `call`（x86）做滚动密钥解密：每次调用前改一段立即数，执行后还原。特征：`bl` 目标在同一小段区域内反复出现，且该区域字节在调试器里"单步就变"。
+
+应对：**不要单步**，用硬件断点或"跳到目标后不返回"的方式绕过；或直接把该区域的最终状态 dump 下来。
+
+### 验证
+
+- [ ] 每个反调试检查项都按"类号 + 比较逻辑"确认，未只凭类号下结论
+- [ ] 所有检查汇聚到统一 bool，按"改 bool / hook 返回 / 跳 handler 出口"拆除，未逐点 nop
+- [ ] 对"检测+后果"型检查，确认让检查**通过**后功能正常，而非仅跳过检测
+- [ ] 滚动解密区未单步（用硬件断点/dump 终态），拆完后程序行为与原版对照无"改了没崩但不对"现象
+
+> 更新：2026-11-18 · 来源：看雪帖 2138362（52pojie.cn 逆向技能包）

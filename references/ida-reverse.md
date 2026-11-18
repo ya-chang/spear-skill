@@ -104,9 +104,68 @@ IDA Pro 是商业软件，需手动安装：
 
 ## 七、验证
 
-- 反编译伪代码与反汇编一致
-- 关键函数的交叉引用和数据流可追溯
-- 注释和重命名覆盖关键逻辑
+- [ ] 反编译伪代码与反汇编一致（C 伪代码与汇编指令语义对应，无错位）
+- [ ] 关键函数的交叉引用和数据流可追溯（X 引用、调用图、数据流图完整）
+- [ ] 注释和重命名覆盖关键逻辑（CHECK_FN、加密函数、校验点均有命名与注释）
+- [ ] IDAPython 脚本执行无报错（脚本运行完成，产出预期标注/导出）
+- [ ] 函数边界识别正确（无误切/漏切，函数 prologue/epilogue 完整）
+
+## 七·五、代码骨架：IDAPython 自动函数识别与标注
+
+> 可运行的 IDAPython 骨架，自动识别函数边界、标注关键函数、导出函数清单。
+
+```python
+# ida_auto_annotate.py — IDAPython 自动分析骨架
+# 功能：遍历所有函数，标注含字符串引用/导入调用的函数，导出清单
+
+import idaapi, idautils, idc, ida_funcs
+
+def is_interesting_function(func):
+    """判断函数是否含关键逻辑：字符串引用、导入调用、校验点特征"""
+    # 检查函数内是否有字符串引用（如 "flag"、"verify"、"check"）
+    for ea in idautils.coderefs(func.start_ea):
+        pass  # 交叉引用遍历
+    for item in idautils.xrefs_to(func.start_ea):
+        pass
+
+    # 检查函数内是否有导入函数调用
+    func_end = func.end_ea
+    for ea in range(func.start_ea, func_end):
+        op = idc.print_operand(ea, 0)
+        if "import" in op.lower() or any(k in op.lower() for k in ["check", "verify", "cmp"]):
+            return True
+    return False
+
+def auto_annotate():
+    """遍历所有函数，标注关键函数并导出清单"""
+    interesting = []
+    for func_ea in idautils.functions():
+        func = ida_funcs.get_func(func_ea)
+        if not func:
+            continue
+        if is_interesting_function(func):
+            # 重命名：用地址或特征命名
+            name = idc.get_name(func.start_ea)
+            if name.startswith("sub_"):
+                new_name = f"interesting_{func.start_ea:x}"
+                idc.set_name(func.start_ea, new_name)
+                # 添加注释
+                idc.set_func_cmt(func.start_ea, "auto-annotated: contains key logic", 0)
+            interesting.append({"ea": hex(func.start_ea), "name": new_name})
+
+    # 导出清单
+    with open("interesting_functions.txt", "w") as f:
+        for item in interesting:
+            f.write(f"{item['ea']} {item['name']}\n")
+    print(f"Annotated {len(interesting)} interesting functions")
+
+if __name__ == "__main__":
+    auto_annotate()
+```
+
+运行：IDA 中 `File → Script file` 加载。验证：关键函数被重命名标注，`interesting_functions.txt` 导出清单，交叉引用可追溯。
+
+> 更新：2026-11-17 · 来源：骨架为通用模板，配合 §三 IDA 分析工作流使用
 
 ## 八、IDA Pro MCP 工具速查（idapro_*，HTTP 模式）
 
@@ -303,3 +362,131 @@ idapro_py_eval(code="import ida_funcs; f=ida_funcs.get_func(0x401000); print(f.s
 | "ERR:timeout" (start.ps1) | 服务器启动失败 | 检查 Python/idalib-mcp 安装 |
 | 进制转换错误 | 手动计算出错 | 用 `idapro_int_convert` |
 | 函数名找不到 | 名称不精确 | 用 `list_funcs` + filter 先搜索 |
+
+## 九、IDA headless 批量生产模块档案与驱动 IOCTL 码表提取
+
+> 场景：几十个模块要逐份建档（节表/导入/设备/注册表/IOCTL），人工逐个看太慢——用 `idat -A -S"脚本.py 参数"` 无头模式把「反编译 → 提取 → 归档」流水线化。
+
+### 9.1 无头调用通式
+
+```bat
+& 'D:\IDA Pro 9.4\idat.exe' -A -S"..\ida_dump.py ida_360Safe.txt" '..\解包\360payload\360Safe.exe'
+& 'D:\IDA Pro 9.4\idat.exe' -A -S"..\ida_decomp.py decomp_360Safe.txt 0x4500F0 0x407B70" '..\解包\360payload\360Safe.exe'
+```
+
+- `-A`：自动分析；`-S"脚本.py 参数"`：启动时执行脚本，**参数直接传给脚本**（如函数地址列表）。
+- 脚本开头必须等自动分析完成：`ida_auto.auto_wait()`，再 `init_hexrays_plugin()`，这是 headless 反编译能跑通的前提。
+
+### 9.2 批量反编译指定函数：ida_decomp.py
+
+从命令行取地址列表，逐个反编译导出伪代码：
+
+```python
+import ida_auto, ida_funcs, ida_hexrays, idc, sys
+
+def tag_remove(s):
+    return s.replace("\n", "")  # 按实际标签清理
+
+def main():
+    ida_auto.auto_wait()
+    ida_hexrays.init_hexrays_plugin()
+    args = sys.argv[1:]          # out.txt 之后全是目标
+    out = args[0]
+    targets = args[1:]           # 如 0x407B70 / 0x44FE98，或函数名
+    with open(out, "w") as f:
+        for t in targets:
+            ea = int(t, 16) if t.lower().startswith("0x") else idc.get_name_ea_simple(t)
+            fn = ida_funcs.get_func(ea)
+            if not fn:
+                continue
+            cfunc = ida_hexrays.decompile(fn.start_ea)
+            text = "\n".join(tag_remove(l.line) for l in cfunc.get_pseudocode())
+            f.write(f"// {ida_funcs.get_func_name(ea)} @ {hex(ea)}\n{text}\n\n")
+
+if __name__ == "__main__":
+    main()
+```
+
+地址既支持 `0x` 十六进制，也支持函数名（`idc.get_name_ea_simple` 解析）。
+
+### 9.3 驱动 IOCTL 码表提取：从 MajorFunction 写入点找分发函数
+
+驱动的 `DriverEntry` 会写 `DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL]`，编译后是 `mov [reg+disp], offset handler`：
+- x86：disp = 14*4 = `0x38`
+- x64：disp = 14*8 = `0x70`
+
+脚本遍历所有可执行段，`decode_insn` 逐条解码，筛 `ops[0].type == o_displ 且 addr == disp` 的 mov，取 `ops[1]` 的立即数/地址为 handler 候选，再用 image base 换算未重定位偏移确认命中：
+
+```python
+import idaapi, idautils, ida_funcs, ida_hexrays, idc
+
+def find_devctl_handlers(disp):
+    """从 MajorFunction[IRP_MJ_DEVICE_CONTROL] 写入点定位分发函数"""
+    image_base = idaapi.get_image_base()
+    for seg in idautils.segments():
+        if not (seg.start <= disp < seg.end) and not is_exec_seg(seg):  # 遍历可执行段
+            continue
+        ea = seg.start
+        while ea < seg.end:
+            insn = idaapi.decode_insn(ea)
+            if insn and len(insn.ops) >= 2:
+                o0, o1 = insn.ops[0], insn.ops[1]
+                # mov [reg+disp], imm/off  —— 找写 MajorFunction 的指令
+                if o0.type == idc.o_displ and o0.value == disp \
+                   and o1.type in (idc.o_imm, idc.o_mem):
+                    target = o1.value if o1.type == idc.o_imm else o1.value
+                    va = image_base + (target if target < image_base else target)
+                    fn = ida_funcs.get_func(va)
+                    if fn:
+                        yield va, fn
+            ea = idaapi.next_head(ea, seg.end)
+
+def decompile_text(ea, max_lines=120):
+    cfunc = ida_hexrays.decompile(ea)
+    return "\n".join(l.line for l in cfunc.get_pseudocode()[:max_lines])
+```
+
+**IOCTL 常量抽取与 CTL_CODE 位域解码**：反编译文本里用正则 `\b0x([0-9A-Fa-f]{6,8})\b` 抽大常量，再按 CTL_CODE 位域解码：
+
+```
+device   = (c >> 16) & 0xFFFF
+access   = c & 3
+function = (c >> 2) & 0xFFF
+method   = (c >> 14) & 3
+```
+
+### 9.4 handler 审计：ida_ioctl_handlers.py
+
+对分发函数做一层调用图：`CodeRefsFrom` 收集一层 callee，KEY 正则筛关键行（长度校验 / 缓冲区 / 探查 / 拷贝），每个 callee 输出「总行数 + 命中行数 + 命中行」：
+
+```
+KEY 正则分组：
+├── 长度：InputBufferLength / OutputBufferLength
+├── 缓冲：SystemBuffer / Type3InputBuffer / UserBuffer / MdlAddress
+├── 探查：ProbeFor / MmIsAddressValid / MmGetSystemAddress
+└── 拷贝：memcpy / memmove / RtlCopy / Irp->
+```
+
+**补充**：设备名字符串除了 `idautils.Strings()`，还要在数据段按 UTF-16LE 找 `\Device\`，避免漏掉宽串。
+
+### 9.5 其他辅助脚本
+
+| 脚本 | 职责 |
+|---|---|
+| `ida_drv_entry.py` | 定位 DriverEntry，提取入口地址/节表/导入 |
+| `ida_xref.py` | 交叉引用：谁引用了某地址/函数 |
+| `ida_dump.py` | 转储反编译结果到文本 |
+| `ida_decomp.py` | 批量反编译指定函数 |
+
+这组脚本构成「档案生产线」：dump 导出文本 → decomp 反编译函数 → xref 找引用 → drv_entry/drv_ioctl 提取驱动特征，批量产出逐模块档案（arch/size/entry/sections/imports/device/registry/service/url/guid/path/api/ioctl_hint/protect 统一维度）。
+
+### 9.6 验证
+
+- [ ] `idat -A -S"脚本.py 参数"` 无头运行成功，无 GUI 进程残留
+- [ ] 批量反编译输出覆盖全部目标地址/函数名，伪代码无缺失
+- [ ] MajorFunction 写入点扫描结果与人工反汇编 `DriverEntry` 一致（handler 地址相符）
+- [ ] IOCTL 常量抽取后按 CTL_CODE 位域解码，device/function/method 与样本上下文吻合
+- [ ] 设备名宽串（UTF-16LE `\Device\`）无遗漏，ASCII/UTF-16 双通道都扫过
+- [ ] 产出的模块档案维度齐全，可跨模块对比
+
+> 更新：2026-11-18 · 来源：看雪帖 2138217《某杀毒引擎逆向(很久之前)》（脱壳破解区）

@@ -87,10 +87,77 @@ apksigner verify dist/signed.apk
 
 ## 六、验证矩阵
 
-- 签名验证通过（v2/v3）
-- DEX/ELF 头有效
-- 三次冷启动存活
-- 预期业务路由可达
+- [ ] 签名验证通过（v2/v3）（`apksigner verify --verbose` 输出 verified，无签名错误）
+- [ ] DEX/ELF 头有效（`file`/`readelf` 识别为正常 DEX/ELF，头部魔数正确）
+- [ ] 三次冷启动存活（连续三次安装启动，无崩溃、无闪退、无签名校验失败）
+- [ ] 预期业务路由可达（登录、授权、网络请求路径正常，与原版行为一致）
+- [ ] patch 字节精确（patch 偏移与字节值与预期一致，未误改其他区域）
+- [ ] 登录/授权/网络行为不变（重打包后核心业务功能与原版一致，未破坏正常路径）
+
+## 六·五、代码骨架：ELF 二进制 patch 脚本
+
+> 可运行的 Python 骨架，在 ELF 指定偏移写入 patch 字节，保留 ELF 头。关键偏移按样本替换。
+
+```python
+# elf_patch.py — ELF 二进制 patch 骨架（Python）
+# 在指定文件偏移写入 patch 字节，保留 ELF 头与程序头
+
+import sys
+import hashlib
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+def patch_elf(elf_path, offset, patch_bytes, backup=None):
+    """在 ELF 指定偏移写入 patch 字节
+
+    Args:
+        elf_path: ELF 文件路径
+        offset: 文件偏移（非 RVA，直接文件偏移）
+        patch_bytes: 要写入的字节
+        backup: 备份路径（可选，patch 前自动备份）
+    """
+    # 1. 备份原始文件
+    if backup:
+        with open(elf_path, "rb") as src, open(backup, "wb") as dst:
+            dst.write(src.read())
+        print(f"[patch] backup saved: {backup} (sha256={sha256_file(backup)[:16]}...)")
+
+    # 2. 写入 patch
+    with open(elf_path, "r+b") as f:
+        f.seek(offset)
+        original = f.read(len(patch_bytes))
+        f.seek(offset)
+        f.write(patch_bytes)
+
+    print(f"[patch] offset=0x{offset:x}, {len(patch_bytes)} bytes")
+    print(f"[patch] original: {original.hex()}")
+    print(f"[patch] patched:  {patch_bytes.hex()}")
+
+    # 3. 校验 ELF 头未被破坏
+    with open(elf_path, "rb") as f:
+        f.seek(0)
+        magic = f.read(4)
+        if magic != b"\x7fELF":
+            print("ERROR: ELF magic corrupted!")
+            sys.exit(1)
+        print("[patch] ELF magic intact")
+
+if __name__ == "__main__":
+    # 示例：在 .text 段某偏移写入 NOP
+    elf = "[TARGET_ELF]"
+    offset = [PATCH_OFFSET]  # 文件偏移，按样本确定
+    patch_bytes = bytes([0x90, 0x90, 0x90, 0x90])  # NOP
+    patch_elf(elf, offset, patch_bytes, backup="[BACKUP_PATH]")
+```
+
+运行：`python3 elf_patch.py`。验证：patch 写入指定偏移，ELF 魔数完整，备份可回滚，patched 文件可运行。
+
+> 更新：2026-11-17 · 来源：骨架为通用模板，配合 §三 ELF patch 工作流使用
 - 无致命日志
 - patch 字节级差异仅在目标处
 
@@ -544,3 +611,29 @@ run_feature_chain
 **确认模式的证据链：** 调用方收到成功返回后是否继续执行功能链；成功块是否写 context/cache/expiry；失败块是否进入卡密输入或充值接口；跳转目标是否支配这些状态写入。
 
 **付费功能/子菜单追踪：** 不能因为入口认证已 patch 就停止追踪。枚举该功能函数及其直接子调用中的全部 `request -> parse(vip/code) -> compare -> conditional exit` 链；每个判定门都单独记录 VA、expected bytes、失败目标和成功续接块。仅 patch 已确认会直接清理并返回上层菜单的授权分支，保留请求失败、协议异常、资源释放和非授权业务错误分支。
+
+## 七、ELF 补环境调试方法论（符号可信度与静态改写边界）
+
+适用：混淆壳版 Native 库（Section Headers 被混淆/strip，符号名不可直接信）的离线补环境分析与静态改写。
+
+**核心认知：加载器只认 Program Header（PT_LOAD/PT_DYNAMIC），Section Header 给静态工具看，可混淆、strip、填假值而不影响运行。**
+
+**1. ELF 手工补齐**：`elf_syms2.py` 式——ELF64 Header 定长偏移取 `e_shoff(0x28)/e_shentsize(0x3a)/e_shnum(0x3c)/e_shstrndx(0x3e)`，手工 unpack 节头（`IIQQQQIIQQ`），shstrndx 定位节名找 `.dynstr/.strtab`，符号名尝试 raw / utf-16-le / gbk / latin1 多解码。PT_DYNAMIC 路径（DT_SYMTAB/DT_STRTAB/DT_JMPREL/DT_PLTGOT/DT_NEEDED）才是加载器真实数据。**多条互不依赖的解析路径（节头表 / 动态段 / GOT 间接扫描）互相证伪**——节头表可以填假，动态段不会。
+
+**2. 符号表可信度判定（先验可信度，再谈地址）**：拿到符号 → ① 反汇编看序言/首条指令 → ② 与符号语义比对 → ③ 不匹配记不可信不硬用 → ④ 匹配则用 GOT/PLT/字符串 xref 交叉证明该栈真的在用。典型污染：SSL_accept 实为跳转表 case 尾部公共 epilogue、BN_rand 首条即 ret、RAND_poll 是跳板、OBJECT 值被小整数占位。版本串、构建日期、错误串可用；错误串 xref 只达字符串表/PLT 桩区 = 不可用。
+
+**3. 离线加载基线（真·补环境）**：模拟器把动态库真正加载起来，缺依赖补桩（GLESv2、FMOD、openssl COMP_*、AAssetManager 等），产出基线表：主库体积、加载耗时/段数、JNI_OnLoad、findSymbolByName、纯函数行为验证、init_array 缺桩清单。要点：**符号名不可用 ≠ 函数不在**（地址仍可按 st_value/偏移算）；**"内存与磁盘 100% 相同"是可证伪判据**（init_array 跑完自解密后等式不再成立）。模拟器自检：keystone 汇编 → Unicorn 执行验证返回值。
+
+**4. 地址换算三层**：静态偏移（st_value/段内偏移）→ 加载基址（模拟器指定，可复算）→ 运行时 VA = 基址 + 静态偏移（**同一翻译层内成立**）→ 文件偏移 = p_offset + (VA - p_vaddr)。
+
+**5. 静态改写的五类失效点（改写前先过一遍）**：
+
+- 运行时构造的数据拿不到（key 由脚本层传参、存运行时对象成员，非静态常量 → 静态挖 key 无解）
+- **静态地址 ≠ 执行地址**（二进制翻译层缓存，静态偏移处原指令不命中，冷启动 0 CALL——ARM 库跑在 x86_64 模拟器经翻译层）
+- 符号层系统性污染（st_value 偏移、OBJECT 占位 → 逐条反汇编反证）
+- **静态改写无法自证有效**（逐点比对+manifest 齐全但未跑流量 → 标注"静态完成、动态未验证"）
+- 结构正确 ≠ 语义正确（格式表对、opcode 重排、槽号 ≠ 常量索引 → 需运行时语义实证）
+
+**6. 算法还原与约束求解判死**：XXTEA 类变体从汇编精确重构（注意 `LShR` 逻辑右移 vs `>>` 算术右移）。Z3 模型：k0..k3 四 BitVec=16B key，known_map 假设明文字，sat→取 model / unsat→假设错 / 超时→实例难。**判死依据**：小实例超时、大实例无望、尾部零字"伪自治"弱方程、非 0 区真实冲突——不是算力问题，是缺确定明文+算法变体未确认。**密钥拿不到时不继续加算力，改问"明文必然在哪一瞬间出现过"**。
+
+**7. 失败记录规范**：目标（偏移/区间/文件名）、手段、观测值、判据、**排除项**——没有排除项无法区分"方法不对"和"目标不存在"。
